@@ -25,3 +25,6 @@ export async function parsePlansAndSaveScopes(opts: {
   });
   // ... rest unchanged
 }
+
+
+export type ScopeItem = { trade: string; description: string; qty: number; unit: string; notes?: string; };
