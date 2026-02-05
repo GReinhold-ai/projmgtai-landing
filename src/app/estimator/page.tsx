@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 // src/app/estimator/page.tsx
 import type { Metadata } from 'next'
 import EstimatorLanding from '@/components/EstimatorLanding'  // ← matches your file path/name
@@ -15,3 +16,4 @@ export default function EstimatorPage() {
     </main>
   )
 }
+
