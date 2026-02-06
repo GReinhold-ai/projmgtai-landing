@@ -158,28 +158,34 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/Reception\s*Desk/i, "Reception Desk", 10],
     [/Team\s*(?:Member|Memb)/i, "Team Members", 10],
     [/Team\s*Room/i, "Team Room", 10],
-    [/Men['']?s?\s*Vanit/i, "Mens Vanity", 10],
-    [/Wom[ea]n['']?s?\s*Vanit/i, "Womens Vanity", 10],
+    [/Men['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Mens Vanity", 10],
+    [/Wom[ea]n['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Womens Vanity", 10],
     [/Vanit(?:y|ies)\s*Detail/i, "Vanity Details", 10],
-    [/Retail\s*Display/i, "Retail Display", 10],
+    [/Retail\s*(?:Display|Trellis|Area)/i, "Retail Display", 10],
     [/Break\s*Room/i, "Break Room", 10],
     [/Nurse\s*Station/i, "Nurse Station", 10],
     [/Check[\s-]*(?:In|Out)/i, "Check-In-Out", 10],
     [/Conference\s*Room/i, "Conference Room", 10],
     [/Equip(?:ment)?\s*Cab/i, "Equipment Cabinet", 10],
     [/Stereo\s*(?:Equip|Cab)/i, "Equipment Cabinet", 10],
+    [/Janitor/i, "Janitor", 10],
+    [/Laundry/i, "Laundry", 10],
+    [/First\s*Floor\s*Plan/i, "First Floor", 10],
+    [/Floor\s*Plan/i, "First Floor", 8],
     
     // Medium specificity (score 5)
     [/\bLocker/i, "Team Members", 5],
     [/\bVanit(?:y|ies)\b/i, "Vanity Details", 5],
     [/\bRetail\b/i, "Retail Display", 5],
+    [/\bTrellis\b/i, "Retail Display", 5],
     [/\bLobby\b/i, "Lobby", 5],
     [/\bKitchen\b/i, "Kitchen", 5],
-    [/\bLaundry\b/i, "Laundry", 5],
     [/\bMirror/i, "Vanity Details", 5],
     [/\bUnisex\b/i, "Unisex", 5],
     [/\bPool\b/i, "Pool Area", 5],
     [/\bFitness\b/i, "Fitness Area", 5],
+    [/\bStereo\b/i, "Service Manager", 5],
+    [/\bAV\s*Equip/i, "Service Manager", 5],
   ];
 
   // Sheet reference patterns — "T3.12" "A7.15" etc. in title block
@@ -246,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.1, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.2, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -479,15 +485,13 @@ function cleanupRows(rows: any[]): any[] {
       // item_type field has something that's not a valid type
       // Check common shift patterns:
       
-      // Pattern A: description→item_type, room→description, item_type→section_id
-      // e.g. "3Form Panel Front" in item_type, "Reception Desk" in room (actually description shifted left)
+      // Pattern A: section_id has a valid item_type — fields shifted right by 2
       if (row.section_id && VALID_ITEM_TYPES.has(row.section_id.trim())) {
-        // section_id has the real item_type — fields shifted right by 2
         const realItemType = row.section_id.trim();
-        const realDesc = itemType; // what was in item_type is actually the description
-        const realUnit = row.qty; // qty has unit
-        const realWidth = row.unit; // unit has width
-        const realDepth = row.width_mm; // width has depth
+        const realDesc = itemType;
+        const realUnit = row.qty;
+        const realWidth = row.unit;
+        const realDepth = row.width_mm;
         
         row.description = realDesc;
         row.item_type = realItemType;
@@ -497,8 +501,50 @@ function cleanupRows(rows: any[]): any[] {
         if (realWidth && !isNaN(Number(realWidth))) row.width_mm = Number(realWidth);
         if (realDepth && !isNaN(Number(realDepth))) row.depth_mm = Number(realDepth);
       }
+      // Pattern C: item_type equals the room name (e.g. "Reception Desk" in item_type)
+      // and section_id has the real description (e.g. "CPU Shelf", "3Form Panel Front")
+      // This is the LLM outputting: roomName;roomName;roomName;description;width;...
+      else if (itemType === row.room && row.section_id && row.section_id.length > 2) {
+        const realDesc = row.section_id; // section_id has the actual description
+        const realWidth = row.qty; // qty position has width
+        const realMaterial = row.depth_mm; // depth position has material name
+        const realUnit = row.unit; // unit may have width or "EA"
+        
+        // Infer item_type from the description
+        const descLower = realDesc.toLowerCase();
+        let inferredType = "assembly";
+        if (/counter/i.test(descLower)) inferredType = "countertop";
+        else if (/panel|3form|frp/i.test(descLower)) inferredType = "decorative_panel";
+        else if (/shelf|cpu/i.test(descLower)) inferredType = descLower.includes("adjust") ? "adjustable_shelf" : "fixed_shelf";
+        else if (/rubber.*base|base.*rubber/i.test(descLower)) inferredType = "rubber_base";
+        else if (/channel/i.test(descLower)) inferredType = "channel";
+        else if (/trim|aluminum.*trim/i.test(descLower)) inferredType = "trim";
+        else if (/substrate|plywood.*sub/i.test(descLower)) inferredType = "substrate";
+        else if (/j.?box/i.test(descLower)) inferredType = "j_box";
+        else if (/conduit/i.test(descLower)) inferredType = "conduit";
+        else if (/grommet/i.test(descLower)) inferredType = "grommet";
+        else if (/hinge/i.test(descLower)) inferredType = "piano_hinge";
+        else if (/cabinet|drawer/i.test(descLower)) inferredType = "base_cabinet";
+        else if (/assembly/i.test(descLower)) inferredType = "assembly";
+        
+        row.item_type = inferredType;
+        row.description = realDesc;
+        row.section_id = "";
+        
+        // Try to parse width from qty field (might be a number like "762")
+        if (realWidth && !isNaN(Number(realWidth)) && Number(realWidth) > 10) {
+          row.width_mm = Number(realWidth);
+        }
+        row.qty = 1;
+        row.unit = "EA";
+        
+        // Material was in depth_mm position
+        if (realMaterial && typeof realMaterial === "string" && isNaN(Number(realMaterial))) {
+          row.material = realMaterial;
+          row.depth_mm = "";
+        }
+      }
       // Pattern B: item_type has a description-like value but other fields make sense
-      // Just try to find the real type from context
       else {
         // Check if description field has a valid item_type
         const desc = (row.description || "").trim();
@@ -511,7 +557,8 @@ function cleanupRows(rows: any[]): any[] {
         else {
           const combined = `${itemType} ${desc}`.toLowerCase();
           if (/rubber.*base|floor.*base/i.test(combined)) row.item_type = "rubber_base";
-          else if (/shelf|adjustable/i.test(combined)) row.item_type = "adjustable_shelf";
+          else if (/adjustable.*shelf/i.test(combined)) row.item_type = "adjustable_shelf";
+          else if (/\bshelf\b|cpu.*shelf/i.test(combined)) row.item_type = "fixed_shelf";
           else if (/channel/i.test(combined)) row.item_type = "channel";
           else if (/j.?box/i.test(combined)) row.item_type = "j_box";
           else if (/panel|3form|frp/i.test(combined)) row.item_type = "decorative_panel";
@@ -521,6 +568,7 @@ function cleanupRows(rows: any[]): any[] {
           else if (/trim/i.test(combined)) row.item_type = "trim";
           else if (/substrate|plywood/i.test(combined)) row.item_type = "substrate";
           else if (/counter/i.test(combined)) row.item_type = "countertop";
+          else if (/locker|cabinet/i.test(combined)) row.item_type = "base_cabinet";
           
           // If item_type was a description and description is the room name, fix it
           if (desc === row.room || !desc) {
@@ -579,7 +627,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.1] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.2] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -617,13 +665,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.2] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.1", mode: "analyze",
+        ok: true, version: "v14.3.2", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -682,7 +730,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const row of cleanedRows) { row.room = row.room || roomName; }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.1", mode: "extract",
+      ok: true, version: "v14.3.2", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -698,7 +746,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.1] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.1", error: err?.message || "Unknown error" });
+    console.error("[v14.3.2] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.2", error: err?.message || "Unknown error" });
   }
 }
