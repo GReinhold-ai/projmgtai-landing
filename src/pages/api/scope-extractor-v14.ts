@@ -1,5 +1,11 @@
 // src/pages/api/scope-extractor-v14.ts
-// V14.3 Scope Extractor — Client-Driven Multi-Room Pipeline
+// V14.3.1 Scope Extractor — Client-Driven Multi-Room Pipeline
+//
+// v14.3.1 FIXES (on top of v14.3):
+//   - TOON sanitization: detect comma-embedded TOON data in descriptions
+//   - Column shift repair: detect description in item_type field, re-map columns
+//   - Clean "extracted" from dimension fields
+//   - Infer item_type from description keywords when LLM outputs non-standard type
 //
 // v14.3 FIXES:
 //   - Room grouping: title-block-aware detection (first/last 600 chars + sheet number patterns)
@@ -240,7 +246,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.1, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -256,8 +262,21 @@ OUTPUT FORMAT:
 
 CRITICAL RULES FOR SEMICOLONS IN OUTPUT:
 - NEVER use semicolons inside any field value. Semicolons are ONLY column separators.
-- If a description contains a semicolon, replace it with a comma or dash.
+- NEVER use commas to create sub-fields within a description. Keep descriptions as plain text.
+- If a description contains a semicolon or comma-separated data, replace with plain text.
 - Each data line must have exactly the same number of semicolons as there are column separators.
+
+COLUMN ORDER IS CRITICAL — every row must follow this exact field order:
+  item_type;room;qty;description;section_id;unit;width_mm;depth_mm;height_mm;dim_source;material_code;material;...
+The FIRST field is ALWAYS item_type (e.g. "base_cabinet", "scope_exclusion").
+The FOURTH field is ALWAYS description (free text).
+NEVER put the description first. NEVER swap item_type and description.
+
+SCOPE_EXCLUSION FORMAT:
+For items not in millwork scope (TVs, AV equipment, by others), use:
+  scope_exclusion;RoomName;1;Short description of item;section;EA;width;depth;height;...
+The description should be SHORT (e.g. "75 TV Samsung ED-75D - By ProAV"). 
+Do NOT embed TOON-formatted data or field values inside the description.
 
 ASSEMBLY RULES:
 - If text describes a single built assembly, create parent row with item_type="assembly"
@@ -374,31 +393,40 @@ function buildUserPrompt(
 }
 
 // ─── TOON Sanitization ──────────────────────────────────────
-// v14.3: Strip semicolons from description fields to prevent column bleed
+// v14.3.1: Comprehensive TOON repair
+//
+// Handles three failure modes:
+// 1. Excess semicolons in description field (v14.3 fix)
+// 2. Comma-separated TOON data embedded in description (LLM outputs commas instead of semicolons)
+// 3. Column order shift (description before item_type)
+
+// Known valid item_type values for detection
+const VALID_ITEM_TYPES = new Set([
+  "assembly", "base_cabinet", "upper_cabinet", "tall_cabinet", "countertop",
+  "decorative_panel", "trim", "channel", "rubber_base", "substrate",
+  "concealed_hinge", "piano_hinge", "grommet", "adjustable_shelf", "fixed_shelf",
+  "cpu_shelf", "drawer", "file_drawer", "trash_drawer", "rollout_basket",
+  "conduit", "j_box", "equipment_cutout", "safe_cabinet", "controls_cabinet",
+  "end_panel", "corner_guard", "corner_detail", "stainless_panel", "hanger_support",
+  "scope_exclusion",
+]);
 
 function sanitizeToon(toon: string): string {
   const lines = toon.split("\n");
   const sanitized: string[] = [];
+  const expectedCols = MW_ITEM_SCHEMA_V14.length;
   
   for (const line of lines) {
-    // Keep header line as-is
     if (line.startsWith("#TOON") || !line.trim()) {
       sanitized.push(line);
       continue;
     }
     
-    // Split into fields
     const fields = line.split(";");
     
-    // The description field is typically the 3rd field (index 2)
-    // Sanitize: replace any embedded semicolons within fields that shouldn't have them
-    // We expect exactly (column_count - 1) semicolons per line
-    const expectedCols = MW_ITEM_SCHEMA_V14.length;
-    
+    // Fix 1: Too many semicolons — merge excess into description
     if (fields.length > expectedCols) {
-      // Too many semicolons — likely semicolons inside a field value
-      // Strategy: merge excess fields into the description (field index 2)
-      const descIdx = 2; // description is typically the 3rd column
+      const descIdx = 2;
       const excess = fields.length - expectedCols;
       const mergedDesc = fields.slice(descIdx, descIdx + excess + 1).join(" - ");
       const fixedFields = [
@@ -407,38 +435,131 @@ function sanitizeToon(toon: string): string {
         ...fields.slice(descIdx + excess + 1)
       ];
       sanitized.push(fixedFields.join(";"));
-    } else {
-      sanitized.push(line);
+      continue;
     }
+    
+    // Fix 2: Comma-embedded TOON data in description field
+    // Pattern: description contains "roomName,qty,,..." which is TOON-like comma data
+    // Detect: description field has 5+ commas with patterns like ",EA," or ",1," or ",extracted,"
+    if (fields.length === expectedCols) {
+      const descField = fields[2] || "";
+      const commaCount = (descField.match(/,/g) || []).length;
+      if (commaCount >= 5 && /,(EA|LS|SF|LF),|,\d+,|,extracted,|,calculated,/i.test(descField)) {
+        // The description has embedded TOON data after the real description
+        // Extract just the first part (before the first occurrence of the room name or comma-separated data pattern)
+        const cleanDesc = descField.replace(/[,](?:Service Manager|Reception Desk|Team Members|Kids Club|Team Room|Unclassified|Retail Display|Laundry|Janitor|Pool Area|Mens Vanity|Womens Vanity|Building Wide)[,].*/i, "").trim();
+        fields[2] = cleanDesc;
+        sanitized.push(fields.join(";"));
+        continue;
+      }
+    }
+    
+    sanitized.push(line);
   }
   
   return sanitized.join("\n");
 }
 
 // ─── Row Cleanup ─────────────────────────────────────────────
-// v14.3: Filter garbage rows and fix column misalignment
+// v14.3.1: Robust column repair
+//
+// Handles:
+// 1. Column shift: description in item_type, item_type in room, etc.
+// 2. Confidence/notes swap
+// 3. Garbage row filtering
+// 4. Description sanitization
 
 function cleanupRows(rows: any[]): any[] {
-  return rows.filter(row => {
+  return rows.map(row => {
+    // Fix column shift: if item_type looks like a description (long text, spaces, not a valid type)
+    // and another field contains a valid item_type, swap them
+    const itemType = (row.item_type || "").trim();
+    
+    if (itemType && !VALID_ITEM_TYPES.has(itemType)) {
+      // item_type field has something that's not a valid type
+      // Check common shift patterns:
+      
+      // Pattern A: description→item_type, room→description, item_type→section_id
+      // e.g. "3Form Panel Front" in item_type, "Reception Desk" in room (actually description shifted left)
+      if (row.section_id && VALID_ITEM_TYPES.has(row.section_id.trim())) {
+        // section_id has the real item_type — fields shifted right by 2
+        const realItemType = row.section_id.trim();
+        const realDesc = itemType; // what was in item_type is actually the description
+        const realUnit = row.qty; // qty has unit
+        const realWidth = row.unit; // unit has width
+        const realDepth = row.width_mm; // width has depth
+        
+        row.description = realDesc;
+        row.item_type = realItemType;
+        row.section_id = "";
+        row.qty = realUnit === "EA" || realUnit === "LS" || realUnit === "LOT" || realUnit === "SF" || realUnit === "LF" ? 1 : (parseInt(realUnit) || 1);
+        row.unit = typeof row.qty === "string" && /^(EA|LS|LOT|SF|LF)$/i.test(row.qty) ? row.qty : "EA";
+        if (realWidth && !isNaN(Number(realWidth))) row.width_mm = Number(realWidth);
+        if (realDepth && !isNaN(Number(realDepth))) row.depth_mm = Number(realDepth);
+      }
+      // Pattern B: item_type has a description-like value but other fields make sense
+      // Just try to find the real type from context
+      else {
+        // Check if description field has a valid item_type
+        const desc = (row.description || "").trim();
+        if (VALID_ITEM_TYPES.has(desc)) {
+          // Swap item_type and description
+          row.description = itemType;
+          row.item_type = desc;
+        }
+        // Otherwise, try to infer type from description keywords
+        else {
+          const combined = `${itemType} ${desc}`.toLowerCase();
+          if (/rubber.*base|floor.*base/i.test(combined)) row.item_type = "rubber_base";
+          else if (/shelf|adjustable/i.test(combined)) row.item_type = "adjustable_shelf";
+          else if (/channel/i.test(combined)) row.item_type = "channel";
+          else if (/j.?box/i.test(combined)) row.item_type = "j_box";
+          else if (/panel|3form|frp/i.test(combined)) row.item_type = "decorative_panel";
+          else if (/grommet/i.test(combined)) row.item_type = "grommet";
+          else if (/hinge/i.test(combined)) row.item_type = "piano_hinge";
+          else if (/conduit/i.test(combined)) row.item_type = "conduit";
+          else if (/trim/i.test(combined)) row.item_type = "trim";
+          else if (/substrate|plywood/i.test(combined)) row.item_type = "substrate";
+          else if (/counter/i.test(combined)) row.item_type = "countertop";
+          
+          // If item_type was a description and description is the room name, fix it
+          if (desc === row.room || !desc) {
+            row.description = itemType;
+          }
+        }
+      }
+    }
+    
+    // Fix confidence/notes swap
+    const validConfidence = ["high", "medium", "low"];
+    if (row.notes && validConfidence.includes(row.notes.toLowerCase()) && !validConfidence.includes((row.confidence || "").toLowerCase())) {
+      const tmp = row.confidence;
+      row.confidence = row.notes;
+      row.notes = tmp || "";
+    }
+    
+    // Clean "extracted" from dimension fields — it's a dim_source value that leaked
+    for (const dimField of ["width_mm", "depth_mm", "height_mm"]) {
+      if (row[dimField] === "extracted" || row[dimField] === "calculated" || row[dimField] === "unknown") {
+        row[dimField] = "";
+      }
+    }
+    
+    // Clean description of any remaining semicolons or commas with TOON patterns
+    if (row.description) {
+      row.description = row.description
+        .replace(/;/g, ",")
+        .replace(/,(?:Service Manager|Reception Desk|Team Members|Kids Club|Team Room|Unclassified|Retail Display|Laundry|Janitor|Pool Area|Mens Vanity|Womens Vanity|Building Wide),\d.*/i, "")
+        .trim();
+    }
+    
+    return row;
+  }).filter(row => {
     // Must have a description or item_type
     if (!row.description && !row.item_type) return false;
     // Description shouldn't be a single word that looks like a column value
     if (row.description && /^(EA|LS|SF|LF|extracted|calculated|unknown|high|medium|low)$/i.test(row.description.trim())) return false;
     return true;
-  }).map(row => {
-    // Fix common column misalignment: confidence value in notes, or vice versa
-    const validConfidence = ["high", "medium", "low"];
-    if (row.notes && validConfidence.includes(row.notes.toLowerCase()) && !validConfidence.includes((row.confidence || "").toLowerCase())) {
-      // Notes has a confidence value, swap
-      const tmp = row.confidence;
-      row.confidence = row.notes;
-      row.notes = tmp || "";
-    }
-    // Clean description of any remaining semicolons
-    if (row.description) {
-      row.description = row.description.replace(/;/g, ",");
-    }
-    return row;
   });
 }
 
@@ -458,7 +579,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.1] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -496,13 +617,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3", mode: "analyze",
+        ok: true, version: "v14.3.1", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -561,7 +682,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const row of cleanedRows) { row.room = row.room || roomName; }
 
     return res.status(200).json({
-      ok: true, version: "v14.3", mode: "extract",
+      ok: true, version: "v14.3.1", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -577,7 +698,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3", error: err?.message || "Unknown error" });
+    console.error("[v14.3.1] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.1", error: err?.message || "Unknown error" });
   }
 }
