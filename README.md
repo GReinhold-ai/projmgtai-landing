@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# V14 Parser Drop-In Upgrade
 
-## Getting Started
+## Install
 
-First, run the development server:
+1. Unzip this into your project root:
+   ```
+   C:\Dev\projmgtai_parser_minimal\projmgtai-ui\
+   ```
+   It will merge into your existing `src\` folder.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+2. Install the Anthropic SDK:
+   ```bash
+   npm install @anthropic-ai/sdk
+   ```
+
+3. Add your Anthropic API key to `.env`:
+   ```
+   ANTHROPIC_API_KEY=sk-ant-your-key-here
+   ```
+   Get your key at: https://console.anthropic.com/settings/keys
+
+## What's in the zip
+
+```
+src/
+├── lib/
+│   ├── toonSchemas.ts              ← REPLACES existing (backward compatible)
+│   └── parser/                     ← NEW folder
+│       ├── preprocess.ts           ← Stage 1: regex pre-processor
+│       └── postprocess.ts          ← Stage 3: validation & enrichment
+└── pages/
+    └── api/
+        └── scope-extractor-v14.ts  ← NEW endpoint (v13 untouched)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## What it does NOT touch
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `src/lib/toon.ts` — unchanged, still works
+- `src/pages/api/scope-extractor-toon.ts` — v13 stays live
+- All other files — untouched
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Endpoints
 
-## Learn More
+- **V13 (existing):** `POST /api/scope-extractor-toon`
+- **V14 (new):**      `POST /api/scope-extractor-v14`
 
-To learn more about Next.js, take a look at the following resources:
+Same request body works for both:
+```json
+{
+  "text": "...OCR text...",
+  "projectId": "24hr-fitness-ventura",
+  "sheetRef": "A8.10"
+}
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Fallback
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+If `ANTHROPIC_API_KEY` is not set but `OPENAI_API_KEY` is, v14 will
+fall back to GPT-4o automatically. You can run both keys simultaneously.
 
-## Deploy on Vercel
+## V14 Response (new fields)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The v14 response includes everything v13 had plus:
+- `assemblies[]` — detected parent assemblies with component rollups
+- `hints{}` — pre-extracted dimensions, materials, hardware, equipment
+- `stats{}` — counts of items with dimensions, materials, flagged defaults
+- `warnings[]` — validation issues found by post-processor
+- `timing{}` — ms for each pipeline stage
