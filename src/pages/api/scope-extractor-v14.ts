@@ -578,98 +578,118 @@ export default async function handler(
     
     const pass1Ms = Date.now() - t0;
 
-    // ── PASS 3: Extract each room ──
+    // ── PASS 3: Extract each room IN PARALLEL ──
     const systemPrompt = buildSystemPrompt(projectContext);
     const allRows: any[] = [];
     const allAssemblies: any[] = [];
     const allWarnings: string[] = [];
     const roomResults: any[] = [];
-    let totalLlmMs = 0;
-    let totalPostMs = 0;
 
-    for (let ri = 0; ri < roomGroups.length; ri++) {
-      const room = roomGroups[ri];
+    // Process all rooms concurrently to stay under Vercel 60s timeout
+    // Create factory functions (not promises) so we can batch them
+    const roomFns = roomGroups.map((room, ri) => async () => {
+      try {
+        // Pre-process combined text for this room
+        const tPre = Date.now();
+        const hints = preprocess(room.combinedText, sheetRef);
+        const preMs = Date.now() - tPre;
 
-      // Rate limit protection: wait between rooms (skip first)
-      if (ri > 0) {
-        await new Promise(resolve => setTimeout(resolve, 5000)); // 5s between rooms
-      }
+        // Build prompt with project context — truncate if too large
+        let userPrompt = buildUserPrompt(room, hints, projectContext, projectId);
 
-      // Pre-process combined text for this room
-      const tPre = Date.now();
-      const hints = preprocess(room.combinedText, sheetRef);
-      const preMs = Date.now() - tPre;
-
-      // Build prompt with project context — truncate if too large
-      let userPrompt = buildUserPrompt(room, hints, projectContext, projectId);
-
-      // Cap prompt at ~20K chars to stay under token limits
-      if (userPrompt.length > 20000) {
-        // Trim the OCR text section, keep hints and context
-        const ocrStart = userPrompt.indexOf('## OCR TEXT');
-        if (ocrStart > 0) {
-          const beforeOcr = userPrompt.substring(0, ocrStart);
-          const ocrSection = userPrompt.substring(ocrStart);
-          const truncatedOcr = ocrSection.substring(0, 20000 - beforeOcr.length) + '\n"""\n\n[TRUNCATED — text exceeded token budget]\n\nOutput ONLY valid TOON with this exact header:\n' + HEADER_V14;
-          userPrompt = beforeOcr + truncatedOcr;
+        // Cap prompt at ~20K chars to stay under token limits
+        if (userPrompt.length > 20000) {
+          const ocrStart = userPrompt.indexOf('## OCR TEXT');
+          if (ocrStart > 0) {
+            const beforeOcr = userPrompt.substring(0, ocrStart);
+            const ocrSection = userPrompt.substring(ocrStart);
+            userPrompt = beforeOcr + ocrSection.substring(0, 20000 - beforeOcr.length) + '\n"""\n\n[TRUNCATED]\n\nOutput ONLY valid TOON with this exact header:\n' + HEADER_V14;
+          }
         }
-      }
 
-      // LLM extraction
-      const tLlm = Date.now();
-      let toon = await callAnthropic(systemPrompt, userPrompt);
-      const llmMs = Date.now() - tLlm;
-      totalLlmMs += llmMs;
+        // LLM extraction
+        const tLlm = Date.now();
+        let toon = await callAnthropic(systemPrompt, userPrompt);
+        const llmMs = Date.now() - tLlm;
 
-      // Validate TOON
-      if (!isValidToon(toon, HEADER_V14)) {
-        const fenceMatch = toon.match(/```(?:toon|csv|text)?\s*\n?(#TOON[\s\S]*?)```/);
-        if (fenceMatch) toon = fenceMatch[1].trim();
-      }
+        // Validate TOON
+        if (!isValidToon(toon, HEADER_V14)) {
+          const fenceMatch = toon.match(/```(?:toon|csv|text)?\s*\n?(#TOON[\s\S]*?)```/);
+          if (fenceMatch) toon = fenceMatch[1].trim();
+        }
 
-      if (!isValidToon(toon, HEADER_V14)) {
-        allWarnings.push(`[${room.roomName}] LLM did not return valid TOON — skipped`);
-        roomResults.push({
-          room: room.roomName,
-          roomId: room.roomId,
+        if (!isValidToon(toon, HEADER_V14)) {
+          return {
+            room: room.roomName, roomId: room.roomId,
+            pages: room.pages.map(p => p.pageNum),
+            status: "failed" as const, error: "Invalid TOON output",
+            rows: [], assemblies: [], warnings: [`[${room.roomName}] LLM did not return valid TOON — skipped`],
+          };
+        }
+
+        // Decode & post-process
+        const rawRows = decodeToon(toon);
+        const tPost = Date.now();
+        const result = postprocess(rawRows);
+        const postMs = Date.now() - tPost;
+
+        // Tag each row with room info
+        for (const row of result.rows) {
+          row.room = row.room || room.roomName;
+        }
+
+        return {
+          room: room.roomName, roomId: room.roomId,
           pages: room.pages.map(p => p.pageNum),
-          status: "failed",
-          error: "Invalid TOON output",
-        });
-        continue;
+          status: "ok" as const,
+          itemCount: result.rows.length,
+          assemblyCount: result.assemblies.length,
+          timing: { preMs, llmMs, postMs },
+          hints: {
+            dimensionCount: hints.dimensions.length,
+            materialCount: hints.materials.length,
+            hardwareCount: hints.hardware.length,
+            assembly: hints.assembly,
+          },
+          rows: result.rows,
+          assemblies: result.assemblies,
+          warnings: result.warnings.map((w: string) => `[${room.roomName}] ${w}`),
+        };
+      } catch (err: any) {
+        return {
+          room: room.roomName, roomId: room.roomId,
+          pages: room.pages.map(p => p.pageNum),
+          status: "error" as const, error: err?.message || "Unknown error",
+          rows: [], assemblies: [], warnings: [`[${room.roomName}] Error: ${err?.message}`],
+        };
       }
+    });
 
-      // Decode & post-process
-      const rawRows = decodeToon(toon);
-      const tPost = Date.now();
-      const result = postprocess(rawRows);
-      const postMs = Date.now() - tPost;
-      totalPostMs += postMs;
-
-      // Tag each row with room info
-      for (const row of result.rows) {
-        row.room = row.room || room.roomName;
+    // Process rooms in batches of 2 to balance speed vs rate limits
+    const BATCH_SIZE = 2;
+    const settled: PromiseSettledResult<any>[] = [];
+    
+    for (let i = 0; i < roomFns.length; i += BATCH_SIZE) {
+      const batch = roomFns.slice(i, i + BATCH_SIZE).map(fn => fn());
+      const batchResults = await Promise.allSettled(batch);
+      settled.push(...batchResults);
+      
+      // Brief pause between batches to avoid rate limits
+      if (i + BATCH_SIZE < roomFns.length) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
+    }
 
+    for (const s of settled) {
+      const result = s.status === "fulfilled" ? s.value : {
+        room: "Unknown", roomId: "", pages: [], status: "error" as const,
+        error: (s as any).reason?.message, rows: [], assemblies: [],
+        warnings: [`[Unknown] Promise rejected: ${(s as any).reason?.message}`],
+      };
       allRows.push(...result.rows);
       allAssemblies.push(...result.assemblies);
-      allWarnings.push(...result.warnings.map((w: string) => `[${room.roomName}] ${w}`));
-
-      roomResults.push({
-        room: room.roomName,
-        roomId: room.roomId,
-        pages: room.pages.map(p => p.pageNum),
-        status: "ok",
-        itemCount: result.rows.length,
-        assemblyCount: result.assemblies.length,
-        timing: { preMs, llmMs, postMs },
-        hints: {
-          dimensionCount: hints.dimensions.length,
-          materialCount: hints.materials.length,
-          hardwareCount: hints.hardware.length,
-          assembly: hints.assembly,
-        },
-      });
+      allWarnings.push(...result.warnings);
+      roomResults.push(result);
     }
 
     const totalMs = Date.now() - t0;
@@ -717,8 +737,8 @@ export default async function handler(
       // Performance
       timing: {
         pass1Ms: pass1Ms,
-        llmMs: totalLlmMs,
-        postprocessMs: totalPostMs,
+        llmMs: roomResults.reduce((sum: number, r: any) => sum + (r.timing?.llmMs || 0), 0),
+        postprocessMs: roomResults.reduce((sum: number, r: any) => sum + (r.timing?.postMs || 0), 0),
         totalMs,
       },
     });
