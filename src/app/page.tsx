@@ -1,5 +1,6 @@
 // src/app/page.tsx
-// ProjMgtAI v14.2 — Client-driven room-by-room extraction
+// ProjMgtAI v14.3 — Client-driven room-by-room extraction
+// v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
 import { useState, useRef, useCallback } from "react";
@@ -79,6 +80,8 @@ export default function HomePage() {
       const allRows: any[] = [];
       const allWarnings: string[] = [];
       const roomResults: any[] = [];
+      let retryCount = 0;
+      const MAX_RETRIES_PER_ROOM = 2;
 
       for (let i = 0; i < rooms.length; i++) {
         const room = rooms[i];
@@ -100,17 +103,20 @@ export default function HomePage() {
 
           if (!extractRes.ok) {
             const e = await extractRes.json().catch(() => ({}));
-            if (extractRes.status === 429 || (e.error && e.error.includes("rate_limit"))) {
+            if ((extractRes.status === 429 || (e.error && e.error.includes("rate_limit"))) && retryCount < MAX_RETRIES_PER_ROOM) {
               setProgress(`Rate limited — waiting 30s before retrying ${room.roomName}...`);
               await new Promise(r => setTimeout(r, 30000));
+              retryCount++;
               i--; // retry this room
               continue;
             }
             allWarnings.push(`[${room.roomName}] Error: ${e.error || extractRes.status}`);
-            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0 });
+            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0, pages: room.pageNums });
+            retryCount = 0;
             continue;
           }
 
+          retryCount = 0;
           const result = await extractRes.json();
           if (result.ok) {
             allRows.push(...(result.rows || []));
@@ -123,11 +129,12 @@ export default function HomePage() {
             });
           } else {
             allWarnings.push(`[${room.roomName}] ${result.error || "Unknown error"}`);
-            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0 });
+            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0, pages: room.pageNums });
           }
         } catch (roomErr: any) {
           allWarnings.push(`[${room.roomName}] ${roomErr.message}`);
-          roomResults.push({ room: room.roomName, status: "error", itemCount: 0 });
+          roomResults.push({ room: room.roomName, status: "error", itemCount: 0, pages: room.pageNums });
+          retryCount = 0;
         }
 
         // Brief pause between rooms for rate limit breathing room
@@ -167,17 +174,20 @@ export default function HomePage() {
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.2"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
-      ["Total Items:", stats.totalItems], [],
+      ["Total Items:", stats.totalItems],
+      ["Items w/ Dimensions:", stats.withDimensions],
+      ["Items w/ Materials:", stats.withMaterials],
+      [],
     ];
     if (projectContext.materialLegend?.length > 0) {
       sum.push(["MATERIAL LEGEND"]);
-      sum.push(["Code", "Manufacturer", "Product", "Catalog #"]);
+      sum.push(["Code", "Manufacturer", "Product", "Catalog #", "Category"]);
       for (const m of projectContext.materialLegend)
-        sum.push([m.code, m.manufacturer, m.productName, m.catalogNumber]);
+        sum.push([m.code, m.manufacturer, m.productName, m.catalogNumber, m.category]);
       sum.push([]);
     }
     sum.push(["ROOM RESULTS"]);
@@ -186,23 +196,35 @@ export default function HomePage() {
       sum.push([r.room, r.status, r.itemCount || 0, (r.pages || []).join(", ")]);
 
     const ws1 = XLSX.utils.aoa_to_sheet(sum);
-    ws1["!cols"] = [{ wch: 25 }, { wch: 20 }, { wch: 25 }, { wch: 20 }];
+    ws1["!cols"] = [{ wch: 25 }, { wch: 20 }, { wch: 25 }, { wch: 20 }, { wch: 15 }];
     XLSX.utils.book_append_sheet(wb, ws1, "Project Summary");
 
-    // Tab 2: All Items
+    // Tab 2: All Items — FIXED column mapping
     const hdrs = ["#", "Room", "Type", "Description", "Section", "Qty", "Unit",
       "W(mm)", "D(mm)", "H(mm)", "Material Code", "Material", "Hardware", "Confidence", "Notes"];
     const allData = [hdrs];
     rows.forEach((r: any, i: number) => {
-      allData.push([i+1, r.room||"", r.item_type||"", r.description||"",
-        r.section_id||"", r.qty||1, r.unit||"EA",
-        r.width_mm||"", r.depth_mm||"", r.height_mm||"",
-        r.material_code||"", r.material||"", r.hardware_spec||r.hardware_type||"",
-        r.confidence||"", r.notes||""]);
+      allData.push([
+        i+1,
+        r.room || "",
+        r.item_type || "",
+        (r.description || "").replace(/;/g, ","),  // Sanitize semicolons
+        r.section_id || "",
+        r.qty || 1,
+        r.unit || "EA",
+        r.width_mm || "",
+        r.depth_mm || "",
+        r.height_mm || "",
+        r.material_code || "",
+        r.material || "",
+        r.hardware_spec || r.hardware_type || "",
+        r.confidence || "",
+        r.notes || ""
+      ]);
     });
     const ws2 = XLSX.utils.aoa_to_sheet(allData);
     ws2["!cols"] = [{wch:5},{wch:20},{wch:18},{wch:45},{wch:8},{wch:5},{wch:5},
-      {wch:8},{wch:8},{wch:8},{wch:12},{wch:30},{wch:30},{wch:8},{wch:35}];
+      {wch:9},{wch:9},{wch:9},{wch:12},{wch:30},{wch:30},{wch:10},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ws2, "All Items");
 
     // Per-room tabs
@@ -212,15 +234,29 @@ export default function HomePage() {
       if (!rr.length) continue;
       const rd = [hdrs];
       rr.forEach((r: any, i: number) => {
-        rd.push([i+1, r.room||"", r.item_type||"", r.description||"",
-          r.section_id||"", r.qty||1, r.unit||"EA",
-          r.width_mm||"", r.depth_mm||"", r.height_mm||"",
-          r.material_code||"", r.material||"", r.hardware_spec||r.hardware_type||"",
-          r.confidence||"", r.notes||""]);
+        rd.push([
+          i+1,
+          r.room || "",
+          r.item_type || "",
+          (r.description || "").replace(/;/g, ","),
+          r.section_id || "",
+          r.qty || 1,
+          r.unit || "EA",
+          r.width_mm || "",
+          r.depth_mm || "",
+          r.height_mm || "",
+          r.material_code || "",
+          r.material || "",
+          r.hardware_spec || r.hardware_type || "",
+          r.confidence || "",
+          r.notes || ""
+        ]);
       });
       const ws = XLSX.utils.aoa_to_sheet(rd);
       ws["!cols"] = ws2["!cols"];
-      XLSX.utils.book_append_sheet(wb, ws, rn.substring(0, 31).replace(/[\\/*?[\]:]/g, ""));
+      // Sheet name: max 31 chars, no special chars
+      const tabName = rn.substring(0, 31).replace(/[\\/*?[\]:]/g, "");
+      XLSX.utils.book_append_sheet(wb, ws, tabName);
     }
 
     // Warnings tab
@@ -262,13 +298,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.2 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.2 — Multi-page, room-by-room extraction
+          ★ v14.3 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -320,7 +356,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v142_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v143_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
