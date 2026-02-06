@@ -1,10 +1,18 @@
 // src/app/page.tsx
-// ProjMgtAI Landing Page — wired to v14 scope extractor
+// ProjMgtAI Landing Page — client-side PDF extraction, wired to v14
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import Script from "next/script";
 
-type ExtractorStatus = "idle" | "uploading" | "extracting" | "done" | "error";
+type ExtractorStatus = "idle" | "reading" | "extracting" | "building" | "done" | "error";
+
+// Declare pdf.js global
+declare global {
+  interface Window {
+    pdfjsLib: any;
+  }
+}
 
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -13,6 +21,7 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [stats, setStats] = useState<any>(null);
+  const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -34,52 +43,73 @@ export default function HomePage() {
     }
   };
 
-  const handleExtract = async () => {
-    if (!file) return;
+  // Extract text from PDF using pdf.js (client-side)
+  async function extractTextFromPdf(pdfFile: File): Promise<string> {
+    const arrayBuffer = await pdfFile.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pages: string[] = [];
 
-    setStatus("uploading");
-    setProgress("Reading PDF...");
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const text = content.items.map((item: any) => item.str).join(" ");
+      pages.push(text);
+    }
+
+    return pages.join("\n\n--- PAGE BREAK ---\n\n");
+  }
+
+  const handleExtract = async () => {
+    if (!file || !pdfReady) return;
+
+    setStatus("reading");
+    setProgress("Extracting text from PDF...");
     setError("");
     setResultUrl(null);
     setStats(null);
 
     try {
-      // Step 1: Read PDF and extract text client-side using pdf.js would be ideal,
-      // but for now we'll send the raw text. The landing page demo uses a simple
-      // FormData approach — the API expects { text, sheetRef, projectId }
-      // For the demo, we'll read the file as text (OCR text from PDF)
-      
-      setProgress("Extracting text from PDF...");
-      
-      // Use the existing OCR/text extraction or send to a helper endpoint
-      // For now, read as ArrayBuffer and send to our extract endpoint
-      const formData = new FormData();
-      formData.append("file", file);
+      // Step 1: Extract text client-side
+      const pdfText = await extractTextFromPdf(file);
 
+      if (!pdfText || pdfText.trim().length < 10) {
+        throw new Error("Could not extract text from PDF. This may be a scanned/image PDF.");
+      }
+
+      // Step 2: Send text to v14 extractor
       setStatus("extracting");
-      setProgress("Running v14 3-stage pipeline...");
+      setProgress(`Running v14 pipeline on ${pdfText.length.toLocaleString()} chars...`);
 
-      // Call the v14 extractor via a wrapper that handles PDF→text→extract→Excel
-      const response = await fetch("/api/extract-and-export", {
+      const response = await fetch("/api/scope-extractor-v14", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: pdfText,
+          projectId: file.name.replace(".pdf", ""),
+          sheetRef: "uploaded",
+        }),
       });
 
       if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: "Extraction failed" }));
-        throw new Error(err.error || `HTTP ${response.status}`);
+        const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+        throw new Error(err.error || `Extraction failed (${response.status})`);
       }
 
-      // Response is the Excel file
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
+      const result = await response.json();
+
+      if (!result.ok) {
+        throw new Error(result.error || "Extraction returned no results");
+      }
+
+      setStats(result.stats);
+
+      // Step 3: Build Excel client-side
+      setStatus("building");
+      setProgress("Building Excel workbook...");
+
+      const excelBlob = await buildExcel(result, file.name);
+      const url = URL.createObjectURL(excelBlob);
       setResultUrl(url);
-
-      // Try to get stats from response headers
-      const statsHeader = response.headers.get("X-Extract-Stats");
-      if (statsHeader) {
-        try { setStats(JSON.parse(statsHeader)); } catch {}
-      }
 
       setStatus("done");
       setProgress("");
@@ -90,11 +120,162 @@ export default function HomePage() {
     }
   };
 
+  // Build Excel workbook client-side using SheetJS (loaded via CDN)
+  async function buildExcel(result: any, filename: string): Promise<Blob> {
+    // @ts-ignore - XLSX loaded via CDN
+    const XLSX = await loadSheetJS();
+    const wb = XLSX.utils.book_new();
+
+    // Tab 1: Bid Summary
+    const bidData = [
+      ["MILLWORK BID / QUOTE — Generated by ProjMgtAI v14"],
+      [],
+      ["Project:", result.projectId || filename],
+      ["Sheet:", result.sheetRef || ""],
+      ["Model:", result.model || ""],
+      ["Pipeline:", "v14 (3-stage: regex → Claude Sonnet → post-validation)"],
+      [],
+      ["EXTRACTION STATS"],
+      ["Total Items:", result.stats?.totalItems || 0],
+      ["With Dimensions:", result.stats?.withDimensions || 0],
+      ["With Materials:", result.stats?.withMaterials || 0],
+      ["Hardware Items:", result.stats?.withHardware || 0],
+      ["Flagged Defaults:", result.stats?.flaggedDefaults || 0],
+      ["Duplicates Removed:", result.stats?.duplicatesRemoved || 0],
+      [],
+      ["TIMING"],
+      ["Pre-processor:", `${result.timing?.preprocessMs || 0}ms`],
+      ["LLM Extraction:", `${result.timing?.llmMs || 0}ms`],
+      ["Post-processor:", `${result.timing?.postprocessMs || 0}ms`],
+      ["Total:", `${result.timing?.totalMs || 0}ms`],
+      [],
+    ];
+
+    // Assemblies
+    if (result.assemblies?.length > 0) {
+      bidData.push(["ASSEMBLIES DETECTED"]);
+      for (const a of result.assemblies) {
+        bidData.push([
+          `${a.assemblyName} (${a.assemblyId})`,
+          `${a.componentCount} components`,
+          `${a.cabinetCount} cabs`,
+          `${a.countertopCount} ctops`,
+          `${a.hardwareCount} hw`,
+          a.materialCodes?.join(", ") || "",
+        ]);
+      }
+      bidData.push([]);
+    }
+
+    // Line items
+    bidData.push(["#", "Type", "Description", "Qty", "Unit", "Material", "Confidence", "Notes"]);
+    const rows = result.rows || [];
+    rows.forEach((r: any, i: number) => {
+      bidData.push([
+        i + 1,
+        r.item_type || "",
+        r.description || "",
+        r.qty || 1,
+        r.unit || "EA",
+        r.material_code || r.material || "",
+        r.confidence || "",
+        r.notes || "",
+      ]);
+    });
+
+    const ws1 = XLSX.utils.aoa_to_sheet(bidData);
+    ws1["!cols"] = [{ wch: 30 }, { wch: 20 }, { wch: 35 }, { wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 10 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, ws1, "Bid-Quote");
+
+    // Tab 2: Full Detail
+    const detailHeaders = [
+      "item_id", "assembly_id", "assembly_name", "section_id",
+      "item_type", "description", "room", "qty", "unit",
+      "length_mm", "width_mm", "height_mm", "depth_mm",
+      "dim_source", "material", "material_code", "finish",
+      "hardware_type", "hardware_spec",
+      "sheet_ref", "detail_ref", "confidence", "notes",
+    ];
+    const detailData = [detailHeaders];
+    rows.forEach((r: any) => {
+      detailData.push(detailHeaders.map((h) => r[h] ?? ""));
+    });
+    const ws2 = XLSX.utils.aoa_to_sheet(detailData);
+    XLSX.utils.book_append_sheet(wb, ws2, "Full Detail");
+
+    // Tab 3: Pre-Processor Hints
+    const hintsData: any[][] = [];
+    const hints = result.hints || {};
+
+    hintsData.push(["DIMENSIONS EXTRACTED:", hints.dimensionCount || 0]);
+    if (hints.dimensions?.length > 0) {
+      hintsData.push(["Raw", "Inches", "MM", "Context", "Line"]);
+      for (const d of hints.dimensions) {
+        hintsData.push([d.raw, d.inches, d.mm, d.context, d.line]);
+      }
+    }
+    hintsData.push([]);
+    hintsData.push(["MATERIALS:", hints.materialCount || 0]);
+    if (hints.materials?.length > 0) {
+      hintsData.push(["Code", "Full Name", "Category"]);
+      for (const m of hints.materials) hintsData.push([m.code, m.fullName, m.category]);
+    }
+    hintsData.push([]);
+    hintsData.push(["HARDWARE:", hints.hardwareCount || 0]);
+    if (hints.hardware?.length > 0) {
+      hintsData.push(["Type", "Qty", "Size", "Spec"]);
+      for (const h of hints.hardware) hintsData.push([h.type, h.qty, h.size || "", h.spec || ""]);
+    }
+    hintsData.push([]);
+    hintsData.push(["EQUIPMENT:", hints.equipmentCount || 0]);
+    if (hints.equipment?.length > 0) {
+      hintsData.push(["Tag", "Description"]);
+      for (const e of hints.equipment) hintsData.push([e.tag, e.description || ""]);
+    }
+
+    const ws3 = XLSX.utils.aoa_to_sheet(hintsData);
+    XLSX.utils.book_append_sheet(wb, ws3, "Pre-Processor Hints");
+
+    // Tab 4: Warnings
+    const warnData = [["POST-PROCESSOR WARNINGS"], []];
+    const warnings = result.warnings || [];
+    if (warnings.length === 0) {
+      warnData.push(["No warnings — all items validated."]);
+    } else {
+      for (const w of warnings) warnData.push([w]);
+    }
+    const ws4 = XLSX.utils.aoa_to_sheet(warnData);
+    XLSX.utils.book_append_sheet(wb, ws4, "Warnings");
+
+    // Write to blob
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    return new Blob([wbout], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+  }
+
+  // Load SheetJS from CDN
+  function loadSheetJS(): Promise<any> {
+    return new Promise((resolve, reject) => {
+      // @ts-ignore
+      if (window.XLSX) { resolve(window.XLSX); return; }
+      const script = document.createElement("script");
+      script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+      script.onload = () => {
+        // @ts-ignore
+        resolve(window.XLSX);
+      };
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
+
   const reset = () => {
     setFile(null);
     setStatus("idle");
     setProgress("");
     setError("");
+    if (resultUrl) URL.revokeObjectURL(resultUrl);
     setResultUrl(null);
     setStats(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -109,6 +290,16 @@ export default function HomePage() {
         fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
       }}
     >
+      {/* Load pdf.js */}
+      <Script
+        src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"
+        onLoad={() => {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          setPdfReady(true);
+        }}
+      />
+
       {/* Nav */}
       <nav
         style={{
@@ -141,29 +332,14 @@ export default function HomePage() {
           </span>
         </div>
         <div style={{ display: "flex", gap: "32px", fontSize: 13, opacity: 0.7 }}>
-          <a href="#features" style={{ color: "inherit", textDecoration: "none" }}>
-            Features
-          </a>
-          <a href="#try" style={{ color: "inherit", textDecoration: "none" }}>
-            Try It
-          </a>
-          <a href="#pipeline" style={{ color: "inherit", textDecoration: "none" }}>
-            Pipeline
-          </a>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
+          <a href="#features" style={{ color: "inherit", textDecoration: "none" }}>Features</a>
+          <a href="#try" style={{ color: "inherit", textDecoration: "none" }}>Try It</a>
+          <a href="#pipeline" style={{ color: "inherit", textDecoration: "none" }}>Pipeline</a>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
             <span
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "#22c55e",
-                display: "inline-block",
+                width: 7, height: 7, borderRadius: "50%",
+                background: "#22c55e", display: "inline-block",
                 boxShadow: "0 0 6px #22c55e",
               }}
             />
@@ -173,59 +349,35 @@ export default function HomePage() {
       </nav>
 
       {/* Hero */}
-      <section
-        style={{
-          textAlign: "center",
-          padding: "100px 20px 80px",
-          position: "relative",
-        }}
-      >
+      <section style={{ textAlign: "center", padding: "100px 20px 80px" }}>
         <div
           style={{
-            display: "inline-block",
-            padding: "6px 16px",
-            border: "1px solid rgba(34,211,238,0.3)",
-            borderRadius: 20,
-            fontSize: 12,
-            color: "#22d3ee",
-            marginBottom: 24,
-            letterSpacing: "0.04em",
+            display: "inline-block", padding: "6px 16px",
+            border: "1px solid rgba(34,211,238,0.3)", borderRadius: 20,
+            fontSize: 12, color: "#22d3ee", marginBottom: 24, letterSpacing: "0.04em",
           }}
         >
           ★ v1.4 Production — Live on Vercel
         </div>
         <h1
           style={{
-            fontSize: "clamp(36px, 5vw, 64px)",
-            fontWeight: 800,
-            lineHeight: 1.1,
-            letterSpacing: "-0.03em",
-            margin: "0 0 20px",
+            fontSize: "clamp(36px, 5vw, 64px)", fontWeight: 800,
+            lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 20px",
             fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
           }}
         >
-          Construction takeoff,
-          <br />
+          Construction takeoff,<br />
           <span
             style={{
               background: "linear-gradient(135deg, #22d3ee, #6366f1, #a855f7)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             }}
           >
             powered by AI.
           </span>
         </h1>
-        <p
-          style={{
-            fontSize: 16,
-            maxWidth: 480,
-            margin: "0 auto 36px",
-            lineHeight: 1.6,
-            opacity: 0.7,
-          }}
-        >
-          Upload architectural plan PDFs. Get structured millwork scope, cabinet specs, 
+        <p style={{ fontSize: 16, maxWidth: 480, margin: "0 auto 36px", lineHeight: 1.6, opacity: 0.7 }}>
+          Upload architectural plan PDFs. Get structured millwork scope, cabinet specs,
           bid sheets, and Excel exports — in seconds, not days.
         </p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
@@ -234,12 +386,8 @@ export default function HomePage() {
             style={{
               padding: "12px 28px",
               background: "linear-gradient(135deg, #22d3ee, #6366f1)",
-              color: "#0a0e1a",
-              borderRadius: 8,
-              fontWeight: 700,
-              fontSize: 14,
+              color: "#0a0e1a", borderRadius: 8, fontWeight: 700, fontSize: 14,
               textDecoration: "none",
-              transition: "transform 0.2s",
             }}
           >
             Try It Now →
@@ -250,10 +398,7 @@ export default function HomePage() {
               padding: "12px 28px",
               background: "rgba(255,255,255,0.06)",
               border: "1px solid rgba(255,255,255,0.1)",
-              color: "#e2e8f0",
-              borderRadius: 8,
-              fontWeight: 600,
-              fontSize: 14,
+              color: "#e2e8f0", borderRadius: 8, fontWeight: 600, fontSize: 14,
               textDecoration: "none",
             }}
           >
@@ -264,39 +409,20 @@ export default function HomePage() {
 
       {/* Features */}
       <section id="features" style={{ padding: "60px 40px", textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.15em",
-            textTransform: "uppercase",
-            color: "#22d3ee",
-            marginBottom: 12,
-          }}
-        >
+        <div style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "#22d3ee", marginBottom: 12 }}>
           CAPABILITIES
         </div>
-        <h2
-          style={{
-            fontSize: 28,
-            fontWeight: 700,
-            fontFamily: "'Inter', sans-serif",
-            marginBottom: 12,
-          }}
-        >
+        <h2 style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Inter', sans-serif", marginBottom: 12 }}>
           From PDF to bid sheet in one click
         </h2>
         <p style={{ opacity: 0.6, maxWidth: 500, margin: "0 auto 48px", fontSize: 14 }}>
-          3-stage AI pipeline: regex pre-processing, Claude Sonnet extraction, 
+          3-stage AI pipeline: regex pre-processing, Claude Sonnet extraction,
           post-validation. Every dimension verified, every material coded.
         </p>
-
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: 20,
-            maxWidth: 900,
-            margin: "0 auto",
+            display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 20, maxWidth: 900, margin: "0 auto",
           }}
         >
           {[
@@ -308,11 +434,8 @@ export default function HomePage() {
             <div
               key={i}
               style={{
-                padding: "28px 24px",
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 12,
-                textAlign: "left",
+                padding: "28px 24px", background: "rgba(255,255,255,0.03)",
+                border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, textAlign: "left",
               }}
             >
               <div style={{ fontSize: 24, marginBottom: 12 }}>{f.icon}</div>
@@ -325,67 +448,36 @@ export default function HomePage() {
 
       {/* Pipeline */}
       <section id="pipeline" style={{ padding: "60px 40px", textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.15em",
-            textTransform: "uppercase",
-            color: "#22d3ee",
-            marginBottom: 12,
-          }}
-        >
+        <div style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "#22d3ee", marginBottom: 12 }}>
           HOW IT WORKS
         </div>
-        <h2
-          style={{
-            fontSize: 28,
-            fontWeight: 700,
-            fontFamily: "'Inter', sans-serif",
-            marginBottom: 12,
-          }}
-        >
+        <h2 style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Inter', sans-serif", marginBottom: 12 }}>
           The extraction pipeline
         </h2>
         <p style={{ opacity: 0.6, maxWidth: 480, margin: "0 auto 40px", fontSize: 14 }}>
-          Three stages. Regex pre-processing feeds Claude Sonnet, then post-validation 
+          Three stages. Regex pre-processing feeds Claude Sonnet, then post-validation
           catches errors. Every decision is explainable and auditable.
         </p>
-
         <div style={{ maxWidth: 520, margin: "0 auto", textAlign: "left" }}>
           {[
-            { stage: "1", title: "PDF Ingestion + OCR", desc: "Architectural plan sets parsed page-by-page, text extracted" },
-            { stage: "2", title: "Regex Pre-Processor", desc: "Dimensions, material codes, hardware, equipment tags — extracted before AI sees the text" },
-            { stage: "3", title: "Assembly Detection", desc: "Reception desks, vanities, nurse stations identified as single structures" },
-            { stage: "4", title: "Claude Sonnet Extraction", desc: "AI matches pre-extracted hints to items — no inventing, no defaults" },
-            { stage: "5", title: "Post-Validation", desc: "Default dimensions flagged, duplicates merged, areas calculated" },
-            { stage: "6", title: "Assembly Roll-Up", desc: "Components grouped under parent assemblies with material + hardware summaries" },
-            { stage: "7", title: "Excel Export", desc: "5-tab workbook: Bid/Quote, Cabinet List, Parts List, By Room, Summary" },
+            { s: "1", title: "PDF Text Extraction", desc: "Text extracted client-side using pdf.js — no file upload needed" },
+            { s: "2", title: "Regex Pre-Processor", desc: "Dimensions, material codes, hardware, equipment tags — found before AI sees the text" },
+            { s: "3", title: "Assembly Detection", desc: "Reception desks, vanities, nurse stations identified as single structures" },
+            { s: "4", title: "Claude Sonnet Extraction", desc: "AI matches pre-extracted hints to items — no inventing, no defaults" },
+            { s: "5", title: "Post-Validation", desc: "Default dimensions flagged, duplicates merged, areas calculated" },
+            { s: "6", title: "Assembly Roll-Up", desc: "Components grouped under parent assemblies with material + hardware summaries" },
+            { s: "7", title: "Excel Export", desc: "4-tab workbook: Bid/Quote, Full Detail, Pre-Processor Hints, Warnings" },
           ].map((step, i) => (
-            <div
-              key={i}
-              style={{
-                display: "flex",
-                gap: 16,
-                marginBottom: 24,
-                alignItems: "flex-start",
-              }}
-            >
+            <div key={i} style={{ display: "flex", gap: 16, marginBottom: 24, alignItems: "flex-start" }}>
               <div
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: "50%",
+                  width: 32, height: 32, borderRadius: "50%",
                   background: "linear-gradient(135deg, #22d3ee, #6366f1)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: "#0a0e1a",
-                  flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 13, fontWeight: 700, color: "#0a0e1a", flexShrink: 0,
                 }}
               >
-                {step.stage}
+                {step.s}
               </div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{step.title}</div>
@@ -398,25 +490,10 @@ export default function HomePage() {
 
       {/* Try It */}
       <section id="try" style={{ padding: "60px 40px 100px", textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 11,
-            letterSpacing: "0.15em",
-            textTransform: "uppercase",
-            color: "#22d3ee",
-            marginBottom: 12,
-          }}
-        >
+        <div style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "#22d3ee", marginBottom: 12 }}>
           LIVE DEMO
         </div>
-        <h2
-          style={{
-            fontSize: 28,
-            fontWeight: 700,
-            fontFamily: "'Inter', sans-serif",
-            marginBottom: 12,
-          }}
-        >
+        <h2 style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Inter', sans-serif", marginBottom: 12 }}>
           Try it now
         </h2>
         <p style={{ opacity: 0.6, marginBottom: 32, fontSize: 14 }}>
@@ -425,12 +502,10 @@ export default function HomePage() {
 
         <div
           style={{
-            maxWidth: 520,
-            margin: "0 auto",
+            maxWidth: 520, margin: "0 auto",
             background: "rgba(255,255,255,0.03)",
             border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: 16,
-            padding: 32,
+            borderRadius: 16, padding: 32,
           }}
         >
           {status === "idle" && (
@@ -440,11 +515,8 @@ export default function HomePage() {
                 onDragOver={(e) => e.preventDefault()}
                 onClick={() => fileInputRef.current?.click()}
                 style={{
-                  border: "2px dashed rgba(34,211,238,0.3)",
-                  borderRadius: 12,
-                  padding: "48px 24px",
-                  cursor: "pointer",
-                  transition: "border-color 0.2s",
+                  border: "2px dashed rgba(34,211,238,0.3)", borderRadius: 12,
+                  padding: "48px 24px", cursor: "pointer", transition: "border-color 0.2s",
                   marginBottom: file ? 16 : 0,
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(34,211,238,0.6)")}
@@ -453,90 +525,66 @@ export default function HomePage() {
                 <div style={{ fontSize: 32, marginBottom: 12 }}>📎</div>
                 <div style={{ fontSize: 14, color: "#22d3ee", fontWeight: 600 }}>
                   Drop a PDF here
-                  <span style={{ opacity: 0.5, color: "#e2e8f0", fontWeight: 400 }}>
-                    {" "}or click to browse
-                  </span>
+                  <span style={{ opacity: 0.5, color: "#e2e8f0", fontWeight: 400 }}> or click to browse</span>
                 </div>
               </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".pdf"
-                onChange={handleFileSelect}
-                style={{ display: "none" }}
-              />
+              <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display: "none" }} />
               {file && (
                 <div style={{ marginTop: 16 }}>
                   <div
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      padding: "12px 16px",
-                      background: "rgba(34,211,238,0.08)",
-                      borderRadius: 8,
-                      marginBottom: 16,
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "12px 16px", background: "rgba(34,211,238,0.08)",
+                      borderRadius: 8, marginBottom: 16,
                     }}
                   >
                     <span style={{ fontSize: 13 }}>
                       📄 {file.name}{" "}
-                      <span style={{ opacity: 0.5 }}>
-                        ({(file.size / 1024 / 1024).toFixed(1)} MB)
-                      </span>
+                      <span style={{ opacity: 0.5 }}>({(file.size / 1024).toFixed(0)} KB)</span>
                     </span>
                     <button
                       onClick={(e) => { e.stopPropagation(); reset(); }}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#ef4444",
-                        cursor: "pointer",
-                        fontSize: 13,
-                      }}
+                      style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
                     >
                       ✕
                     </button>
                   </div>
                   <button
                     onClick={handleExtract}
+                    disabled={!pdfReady}
                     style={{
-                      width: "100%",
-                      padding: "14px",
-                      background: "linear-gradient(135deg, #22d3ee, #6366f1)",
-                      color: "#0a0e1a",
-                      border: "none",
-                      borderRadius: 8,
-                      fontWeight: 700,
-                      fontSize: 15,
-                      cursor: "pointer",
+                      width: "100%", padding: "14px",
+                      background: pdfReady
+                        ? "linear-gradient(135deg, #22d3ee, #6366f1)"
+                        : "rgba(255,255,255,0.1)",
+                      color: "#0a0e1a", border: "none", borderRadius: 8,
+                      fontWeight: 700, fontSize: 15, cursor: pdfReady ? "pointer" : "wait",
                       fontFamily: "inherit",
                     }}
                   >
-                    Extract Millwork Scope →
+                    {pdfReady ? "Extract Millwork Scope →" : "Loading PDF engine..."}
                   </button>
                 </div>
               )}
             </>
           )}
 
-          {(status === "uploading" || status === "extracting") && (
+          {(status === "reading" || status === "extracting" || status === "building") && (
             <div style={{ padding: "40px 0" }}>
               <div
                 style={{
-                  width: 48,
-                  height: 48,
+                  width: 48, height: 48,
                   border: "3px solid rgba(34,211,238,0.2)",
                   borderTop: "3px solid #22d3ee",
-                  borderRadius: "50%",
-                  margin: "0 auto 20px",
+                  borderRadius: "50%", margin: "0 auto 20px",
                   animation: "spin 1s linear infinite",
                 }}
               />
               <div style={{ fontSize: 14, fontWeight: 600 }}>{progress}</div>
               <div style={{ fontSize: 12, opacity: 0.5, marginTop: 8 }}>
-                {status === "extracting"
-                  ? "Stage 1: Regex → Stage 2: Claude Sonnet → Stage 3: Validation"
-                  : "Preparing file..."}
+                {status === "reading" && "Reading PDF pages..."}
+                {status === "extracting" && "Stage 1: Regex → Stage 2: Claude Sonnet → Stage 3: Validation"}
+                {status === "building" && "Generating Excel workbook..."}
               </div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
@@ -545,35 +593,21 @@ export default function HomePage() {
           {status === "done" && resultUrl && (
             <div style={{ padding: "24px 0" }}>
               <div style={{ fontSize: 40, marginBottom: 16 }}>✅</div>
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
-                Extraction Complete
-              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Extraction Complete</div>
               {stats && (
-                <div
-                  style={{
-                    fontSize: 12,
-                    opacity: 0.6,
-                    marginBottom: 20,
-                    lineHeight: 1.8,
-                  }}
-                >
-                  {stats.totalItems} items · {stats.withDimensions} with dimensions · 
+                <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 20, lineHeight: 1.8 }}>
+                  {stats.totalItems} items · {stats.withDimensions} with dimensions ·{" "}
                   {stats.withMaterials} with materials · {stats.flaggedDefaults} flagged defaults
                 </div>
               )}
               <a
                 href={resultUrl}
-                download={`shop_order_${file?.name?.replace(".pdf", "")}.xlsx`}
+                download={`shop_order_v14_${file?.name?.replace(".pdf", "")}.xlsx`}
                 style={{
-                  display: "inline-block",
-                  padding: "14px 32px",
+                  display: "inline-block", padding: "14px 32px",
                   background: "linear-gradient(135deg, #22c55e, #16a34a)",
-                  color: "#fff",
-                  borderRadius: 8,
-                  fontWeight: 700,
-                  fontSize: 14,
-                  textDecoration: "none",
-                  marginBottom: 12,
+                  color: "#fff", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                  textDecoration: "none", marginBottom: 12,
                 }}
               >
                 ⬇ Download Excel
@@ -582,15 +616,9 @@ export default function HomePage() {
               <button
                 onClick={reset}
                 style={{
-                  background: "none",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  color: "#e2e8f0",
-                  padding: "10px 24px",
-                  borderRadius: 8,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  marginTop: 8,
-                  fontFamily: "inherit",
+                  background: "none", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#e2e8f0", padding: "10px 24px", borderRadius: 8,
+                  fontSize: 13, cursor: "pointer", marginTop: 8, fontFamily: "inherit",
                 }}
               >
                 Extract Another
@@ -601,20 +629,13 @@ export default function HomePage() {
           {status === "error" && (
             <div style={{ padding: "24px 0" }}>
               <div style={{ fontSize: 40, marginBottom: 16 }}>❌</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#ef4444", marginBottom: 8 }}>
-                {error}
-              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#ef4444", marginBottom: 8 }}>{error}</div>
               <button
                 onClick={reset}
                 style={{
-                  background: "none",
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  color: "#e2e8f0",
-                  padding: "10px 24px",
-                  borderRadius: 8,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
+                  background: "none", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#e2e8f0", padding: "10px 24px", borderRadius: 8,
+                  fontSize: 13, cursor: "pointer", fontFamily: "inherit",
                 }}
               >
                 Try Again
@@ -631,23 +652,14 @@ export default function HomePage() {
       {/* Footer */}
       <footer
         style={{
-          textAlign: "center",
-          padding: "40px 20px",
+          textAlign: "center", padding: "40px 20px",
           borderTop: "1px solid rgba(255,255,255,0.06)",
-          fontSize: 12,
-          opacity: 0.4,
+          fontSize: 12, opacity: 0.4,
         }}
       >
         <div style={{ display: "flex", gap: 24, justifyContent: "center", marginBottom: 12 }}>
-          <a href="https://api.projmgt.ai" style={{ color: "inherit", textDecoration: "none" }}>
-            API Documentation
-          </a>
-          <a
-            href="https://github.com/GReinhold-ai/projmgtai-landing"
-            style={{ color: "inherit", textDecoration: "none" }}
-          >
-            GitHub
-          </a>
+          <a href="https://api.projmgt.ai" style={{ color: "inherit", textDecoration: "none" }}>API Documentation</a>
+          <a href="https://github.com/GReinhold-ai/projmgtai-landing" style={{ color: "inherit", textDecoration: "none" }}>GitHub</a>
         </div>
         © 2026 ProjMgtAI — Construction Intelligence, not guesswork.
       </footer>
