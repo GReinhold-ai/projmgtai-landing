@@ -1,22 +1,17 @@
 // src/app/page.tsx
-// ProjMgtAI Landing Page — v14.2 Multi-Page Pipeline
+// ProjMgtAI v14.2 — Client-driven room-by-room extraction
 "use client";
 
 import { useState, useRef, useCallback } from "react";
 import Script from "next/script";
 
-type ExtractorStatus = "idle" | "reading" | "classifying" | "extracting" | "building" | "done" | "error";
+type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "done" | "error";
 
-declare global {
-  interface Window {
-    pdfjsLib: any;
-    XLSX: any;
-  }
-}
+declare global { interface Window { pdfjsLib: any; XLSX: any; } }
 
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<ExtractorStatus>("idle");
+  const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -26,213 +21,215 @@ export default function HomePage() {
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const dropped = e.dataTransfer.files[0];
-    if (dropped?.type === "application/pdf") {
-      setFile(dropped);
-      setError("");
-    } else {
-      setError("Please drop a PDF file.");
-    }
+    const d = e.dataTransfer.files[0];
+    if (d?.type === "application/pdf") { setFile(d); setError(""); }
+    else setError("Please drop a PDF file.");
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (selected) { setFile(selected); setError(""); }
+    const f = e.target.files?.[0];
+    if (f) { setFile(f); setError(""); }
   };
 
-  // Extract text from PDF with page markers
   async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number }> {
-    const arrayBuffer = await pdfFile.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const buf = await pdfFile.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
-
     for (let i = 1; i <= pdf.numPages; i++) {
       setProgress(`Reading page ${i} of ${pdf.numPages}...`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const text = content.items.map((item: any) => item.str).join(" ");
-      pages.push(`--- PAGE ${i} ---\n${text}`);
+      pages.push(`--- PAGE ${i} ---\n${content.items.map((it: any) => it.str).join(" ")}`);
     }
-
     return { text: pages.join("\n\n"), pageCount: pdf.numPages };
   }
 
   const handleExtract = async () => {
     if (!file || !pdfReady) return;
-
-    setStatus("reading");
-    setProgress("Extracting text from PDF...");
-    setError("");
-    setResultUrl(null);
-    setStats(null);
+    setStatus("reading"); setProgress("Extracting text from PDF..."); setError("");
+    setResultUrl(null); setStats(null);
 
     try {
-      // Step 1: Extract text with page markers
+      // Step 1: Extract PDF text
       const { text: pdfText, pageCount } = await extractTextFromPdf(file);
+      if (!pdfText || pdfText.trim().length < 10)
+        throw new Error("Could not extract text. This may be a scanned PDF.");
 
-      if (!pdfText || pdfText.trim().length < 10) {
-        throw new Error("Could not extract text from PDF. This may be a scanned/image PDF.");
-      }
+      // Step 2: Analyze — get room groupings + project context
+      setStatus("analyzing");
+      setProgress(`Analyzing ${pageCount} pages — detecting rooms & material legend...`);
 
-      // Step 2: Send to v14.2 multi-page pipeline
-      setStatus("extracting");
-      setProgress(`Running v14.2 multi-page pipeline (${pageCount} pages, ${pdfText.length.toLocaleString()} chars)...`);
-
-      const response = await fetch("/api/scope-extractor-v14", {
+      const analyzeRes = await fetch("/api/scope-extractor-v14", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: pdfText,
-          projectId: file.name.replace(".pdf", ""),
-          sheetRef: "multi-page",
-        }),
+        body: JSON.stringify({ text: pdfText, projectId: file.name.replace(".pdf", ""), mode: "analyze" }),
       });
+      if (!analyzeRes.ok) {
+        const e = await analyzeRes.json().catch(() => ({}));
+        throw new Error(e.error || `Analysis failed (${analyzeRes.status})`);
+      }
+      const analysis = await analyzeRes.json();
+      if (!analysis.ok) throw new Error(analysis.error || "Analysis failed");
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-        const msg = err.error || `Extraction failed (${response.status})`;
-        if (response.status === 429 || msg.includes("rate_limit")) {
-          throw new Error("API rate limit reached. Please wait 30 seconds and try again.");
+      const rooms = analysis.rooms || [];
+      const projectContext = analysis.projectContext || {};
+
+      // Step 3: Extract room by room
+      setStatus("extracting");
+      const allRows: any[] = [];
+      const allWarnings: string[] = [];
+      const roomResults: any[] = [];
+
+      for (let i = 0; i < rooms.length; i++) {
+        const room = rooms[i];
+        setProgress(`Extracting room ${i + 1}/${rooms.length}: ${room.roomName} (pages ${room.pageNums.join(", ")})...`);
+
+        try {
+          const extractRes = await fetch("/api/scope-extractor-v14", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: pdfText,
+              projectId: file.name.replace(".pdf", ""),
+              mode: "extract",
+              roomName: room.roomName,
+              roomPages: room.pageNums,
+              projectContext: projectContext,
+            }),
+          });
+
+          if (!extractRes.ok) {
+            const e = await extractRes.json().catch(() => ({}));
+            if (extractRes.status === 429 || (e.error && e.error.includes("rate_limit"))) {
+              setProgress(`Rate limited — waiting 30s before retrying ${room.roomName}...`);
+              await new Promise(r => setTimeout(r, 30000));
+              i--; // retry this room
+              continue;
+            }
+            allWarnings.push(`[${room.roomName}] Error: ${e.error || extractRes.status}`);
+            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0 });
+            continue;
+          }
+
+          const result = await extractRes.json();
+          if (result.ok) {
+            allRows.push(...(result.rows || []));
+            allWarnings.push(...(result.warnings || []).map((w: string) => `[${room.roomName}] ${w}`));
+            roomResults.push({
+              room: room.roomName, status: "ok",
+              itemCount: result.rows?.length || 0,
+              pages: room.pageNums,
+              timing: result.timing,
+            });
+          } else {
+            allWarnings.push(`[${room.roomName}] ${result.error || "Unknown error"}`);
+            roomResults.push({ room: room.roomName, status: "failed", itemCount: 0 });
+          }
+        } catch (roomErr: any) {
+          allWarnings.push(`[${room.roomName}] ${roomErr.message}`);
+          roomResults.push({ room: room.roomName, status: "error", itemCount: 0 });
         }
-        throw new Error(msg);
+
+        // Brief pause between rooms for rate limit breathing room
+        if (i < rooms.length - 1) {
+          await new Promise(r => setTimeout(r, 3000));
+        }
       }
 
-      const result = await response.json();
-      if (!result.ok) throw new Error(result.error || "Extraction returned no results");
-
-      setStats(result.stats);
-
-      // Step 3: Build multi-tab Excel
+      // Step 4: Build Excel
       setStatus("building");
       setProgress("Building Excel workbook...");
 
-      const excelBlob = await buildExcel(result, file.name);
-      const url = URL.createObjectURL(excelBlob);
-      setResultUrl(url);
-      setStatus("done");
-      setProgress("");
+      const finalStats = {
+        pageCount, roomCount: rooms.length, totalItems: allRows.length,
+        withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
+        withMaterials: allRows.filter((r: any) => r.material_code || r.material).length,
+        materialLegendCount: projectContext.materialLegend?.length || 0,
+        documentType: projectContext.documentType || "unknown",
+        roomResults,
+      };
+      setStats(finalStats);
+
+      const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
+      setResultUrl(URL.createObjectURL(blob));
+      setStatus("done"); setProgress("");
     } catch (err: any) {
-      setStatus("error");
-      setError(err.message || "Something went wrong");
-      setProgress("");
+      setStatus("error"); setError(err.message || "Something went wrong"); setProgress("");
     }
   };
 
-  // Build multi-tab Excel with per-room sheets
-  async function buildExcel(result: any, filename: string): Promise<Blob> {
+  async function buildExcel(
+    rows: any[], roomResults: any[], warnings: string[],
+    projectContext: any, stats: any, filename: string
+  ): Promise<Blob> {
     const XLSX = await loadSheetJS();
     const wb = XLSX.utils.book_new();
 
-    // ── Tab 1: Project Summary ──
-    const summaryData: any[][] = [
-      ["MILLWORK SHOP ORDER — Generated by ProjMgtAI v14.2"],
-      [],
-      ["Project:", result.projectId || filename],
-      ["Document Type:", result.projectContext?.documentType || "unknown"],
-      ["Model:", result.model || ""],
-      ["Pipeline:", "v14.2 (multi-page: room grouping → cross-sheet context → per-room extraction)"],
-      ["Pages Processed:", result.stats?.pageCount || 0],
-      ["Rooms Detected:", result.stats?.roomCount || 0],
-      [],
+    // Tab 1: Project Summary
+    const sum: any[][] = [
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.2"], [],
+      ["Project:", filename.replace(".pdf", "")],
+      ["Document Type:", projectContext.documentType || "unknown"],
+      ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
+      ["Total Items:", stats.totalItems], [],
     ];
-
-    // Material legend
-    if (result.projectContext?.materialLegend?.length > 0) {
-      summaryData.push(["RESOLVED MATERIAL SPECIFICATIONS"]);
-      summaryData.push(["Code", "Manufacturer", "Product", "Catalog #", "Category"]);
-      for (const m of result.projectContext.materialLegend) {
-        summaryData.push([m.code, m.manufacturer, m.productName, m.catalogNumber, m.category]);
-      }
-      summaryData.push([]);
+    if (projectContext.materialLegend?.length > 0) {
+      sum.push(["MATERIAL LEGEND"]);
+      sum.push(["Code", "Manufacturer", "Product", "Catalog #"]);
+      for (const m of projectContext.materialLegend)
+        sum.push([m.code, m.manufacturer, m.productName, m.catalogNumber]);
+      sum.push([]);
     }
+    sum.push(["ROOM RESULTS"]);
+    sum.push(["Room", "Status", "Items", "Pages"]);
+    for (const r of roomResults)
+      sum.push([r.room, r.status, r.itemCount || 0, (r.pages || []).join(", ")]);
 
-    // Room summary
-    summaryData.push(["ROOM EXTRACTION SUMMARY"]);
-    summaryData.push(["Room", "Pages", "Items", "Assemblies", "Status", "LLM Time"]);
-    const rooms = result.rooms || [];
-    for (const r of rooms) {
-      summaryData.push([
-        r.room, (r.pages || []).join(", "), r.itemCount || 0,
-        r.assemblyCount || 0, r.status || "",
-        r.timing ? `${r.timing.llmMs}ms` : "",
-      ]);
-    }
-    summaryData.push([]);
-
-    // Timing
-    summaryData.push(["PERFORMANCE"]);
-    summaryData.push(["Pass 1 (context + grouping):", `${result.timing?.pass1Ms || 0}ms`]);
-    summaryData.push(["Pass 3 (LLM extraction):", `${result.timing?.llmMs || 0}ms`]);
-    summaryData.push(["Post-processing:", `${result.timing?.postprocessMs || 0}ms`]);
-    summaryData.push(["Total:", `${result.timing?.totalMs || 0}ms`]);
-
-    const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
-    ws1["!cols"] = [{ wch: 32 }, { wch: 20 }, { wch: 25 }, { wch: 18 }, { wch: 15 }, { wch: 15 }];
+    const ws1 = XLSX.utils.aoa_to_sheet(sum);
+    ws1["!cols"] = [{ wch: 25 }, { wch: 20 }, { wch: 25 }, { wch: 20 }];
     XLSX.utils.book_append_sheet(wb, ws1, "Project Summary");
 
-    // ── Tab 2: All Items (master list) ──
-    const allHeaders = [
-      "#", "Room", "Type", "Description", "Section", "Qty", "Unit",
-      "W (mm)", "D (mm)", "H (mm)", "Dim Source",
-      "Material Code", "Material", "Hardware",
-      "Confidence", "Notes"
-    ];
-    const allData = [allHeaders];
-    const rows = result.rows || [];
+    // Tab 2: All Items
+    const hdrs = ["#", "Room", "Type", "Description", "Section", "Qty", "Unit",
+      "W(mm)", "D(mm)", "H(mm)", "Material Code", "Material", "Hardware", "Confidence", "Notes"];
+    const allData = [hdrs];
     rows.forEach((r: any, i: number) => {
-      allData.push([
-        i + 1, r.room || "", r.item_type || "", r.description || "",
-        r.section_id || "", r.qty || 1, r.unit || "EA",
-        r.width_mm || "", r.depth_mm || "", r.height_mm || "", r.dim_source || "",
-        r.material_code || "", r.material || "", r.hardware_spec || r.hardware_type || "",
-        r.confidence || "", r.notes || "",
-      ]);
+      allData.push([i+1, r.room||"", r.item_type||"", r.description||"",
+        r.section_id||"", r.qty||1, r.unit||"EA",
+        r.width_mm||"", r.depth_mm||"", r.height_mm||"",
+        r.material_code||"", r.material||"", r.hardware_spec||r.hardware_type||"",
+        r.confidence||"", r.notes||""]);
     });
     const ws2 = XLSX.utils.aoa_to_sheet(allData);
-    ws2["!cols"] = [
-      { wch: 5 }, { wch: 20 }, { wch: 18 }, { wch: 45 }, { wch: 8 },
-      { wch: 6 }, { wch: 6 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-      { wch: 10 }, { wch: 12 }, { wch: 30 }, { wch: 30 }, { wch: 10 }, { wch: 40 },
-    ];
+    ws2["!cols"] = [{wch:5},{wch:20},{wch:18},{wch:45},{wch:8},{wch:5},{wch:5},
+      {wch:8},{wch:8},{wch:8},{wch:12},{wch:30},{wch:30},{wch:8},{wch:35}];
     XLSX.utils.book_append_sheet(wb, ws2, "All Items");
 
-    // ── Tabs 3+: Per-Room sheets ──
+    // Per-room tabs
     const roomNames = [...new Set(rows.map((r: any) => r.room || "Unclassified"))];
-    for (const roomName of roomNames) {
-      const roomRows = rows.filter((r: any) => (r.room || "Unclassified") === roomName);
-      if (roomRows.length === 0) continue;
-
-      const roomData = [allHeaders];
-      roomRows.forEach((r: any, i: number) => {
-        roomData.push([
-          i + 1, r.room || "", r.item_type || "", r.description || "",
-          r.section_id || "", r.qty || 1, r.unit || "EA",
-          r.width_mm || "", r.depth_mm || "", r.height_mm || "", r.dim_source || "",
-          r.material_code || "", r.material || "", r.hardware_spec || r.hardware_type || "",
-          r.confidence || "", r.notes || "",
-        ]);
+    for (const rn of roomNames) {
+      const rr = rows.filter((r: any) => (r.room || "Unclassified") === rn);
+      if (!rr.length) continue;
+      const rd = [hdrs];
+      rr.forEach((r: any, i: number) => {
+        rd.push([i+1, r.room||"", r.item_type||"", r.description||"",
+          r.section_id||"", r.qty||1, r.unit||"EA",
+          r.width_mm||"", r.depth_mm||"", r.height_mm||"",
+          r.material_code||"", r.material||"", r.hardware_spec||r.hardware_type||"",
+          r.confidence||"", r.notes||""]);
       });
-
-      const wsRoom = XLSX.utils.aoa_to_sheet(roomData);
-      wsRoom["!cols"] = ws2["!cols"];
-      // Excel sheet names max 31 chars
-      const sheetName = roomName.substring(0, 31).replace(/[\\/*?[\]:]/g, "");
-      XLSX.utils.book_append_sheet(wb, wsRoom, sheetName);
+      const ws = XLSX.utils.aoa_to_sheet(rd);
+      ws["!cols"] = ws2["!cols"];
+      XLSX.utils.book_append_sheet(wb, ws, rn.substring(0, 31).replace(/[\\/*?[\]:]/g, ""));
     }
 
-    // ── Warnings tab ──
-    const warnData: any[][] = [["POST-PROCESSOR WARNINGS"], []];
-    const warnings = result.warnings || [];
-    if (warnings.length === 0) {
-      warnData.push(["No warnings — all items validated."]);
-    } else {
-      for (const w of warnings) warnData.push([w]);
-    }
-    const wsWarn = XLSX.utils.aoa_to_sheet(warnData);
-    XLSX.utils.book_append_sheet(wb, wsWarn, "Warnings");
+    // Warnings tab
+    const wd: any[][] = [["WARNINGS"], []];
+    if (!warnings.length) wd.push(["No warnings."]);
+    else for (const w of warnings) wd.push([w]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wd), "Warnings");
 
-    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    return new Blob([wbout], {
+    return new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
   }
@@ -240,11 +237,10 @@ export default function HomePage() {
   function loadSheetJS(): Promise<any> {
     return new Promise((resolve, reject) => {
       if (window.XLSX) { resolve(window.XLSX); return; }
-      const script = document.createElement("script");
-      script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
-      script.onload = () => resolve(window.XLSX);
-      script.onerror = reject;
-      document.head.appendChild(script);
+      const s = document.createElement("script");
+      s.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+      s.onload = () => resolve(window.XLSX); s.onerror = reject;
+      document.head.appendChild(s);
     });
   }
 
@@ -256,166 +252,93 @@ export default function HomePage() {
   };
 
   return (
-    <main style={{
-      minHeight: "100vh",
-      background: "linear-gradient(168deg, #0a0e1a 0%, #0f1729 40%, #111d2e 100%)",
-      color: "#e2e8f0",
-      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace",
-    }}>
-      <Script
-        src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"
-        onLoad={() => {
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-          setPdfReady(true);
-        }}
-      />
+    <main style={{ minHeight:"100vh", background:"linear-gradient(168deg,#0a0e1a 0%,#0f1729 40%,#111d2e 100%)", color:"#e2e8f0", fontFamily:"'JetBrains Mono','SF Mono','Fira Code',monospace" }}>
+      <Script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"
+        onLoad={() => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; setPdfReady(true); }} />
 
-      {/* Nav */}
-      <nav style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 40px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div style={{ width: 28, height: 28, background: "linear-gradient(135deg, #22d3ee, #6366f1)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#0a0e1a" }}>P</div>
-          <span style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-0.02em" }}>ProjMgtAI</span>
+      <nav style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"20px 40px", borderBottom:"1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:28, height:28, background:"linear-gradient(135deg,#22d3ee,#6366f1)", borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:700, color:"#0a0e1a" }}>P</div>
+          <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
-        <div style={{ display: "flex", gap: "32px", fontSize: 13, opacity: 0.7 }}>
-          <a href="#features" style={{ color: "inherit", textDecoration: "none" }}>Features</a>
-          <a href="#try" style={{ color: "inherit", textDecoration: "none" }}>Try It</a>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", display: "inline-block", boxShadow: "0 0 6px #22c55e" }} />
-            v14.2 Live
-          </span>
-        </div>
+        <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.2 Live
+        </span>
       </nav>
 
-      {/* Hero */}
-      <section style={{ textAlign: "center", padding: "100px 20px 80px" }}>
-        <div style={{ display: "inline-block", padding: "6px 16px", border: "1px solid rgba(34,211,238,0.3)", borderRadius: 20, fontSize: 12, color: "#22d3ee", marginBottom: 24, letterSpacing: "0.04em" }}>
-          ★ v14.2 Multi-Page — Upload full plan sets
+      <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
+        <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
+          ★ v14.2 — Multi-page, room-by-room extraction
         </div>
-        <h1 style={{ fontSize: "clamp(36px, 5vw, 64px)", fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", margin: "0 0 20px", fontFamily: "'Inter', 'Helvetica Neue', sans-serif" }}>
-          Full project takeoff,<br />
-          <span style={{ background: "linear-gradient(135deg, #22d3ee, #6366f1, #a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-            every room, one click.
-          </span>
+        <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
+          Full project takeoff,<br/>
+          <span style={{ background:"linear-gradient(135deg,#22d3ee,#6366f1,#a855f7)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>every room, one upload.</span>
         </h1>
-        <p style={{ fontSize: 16, maxWidth: 520, margin: "0 auto 36px", lineHeight: 1.6, opacity: 0.7 }}>
-          Upload multi-page architectural plan PDFs. AI auto-groups pages by room,
-          resolves material specs across sheets, and extracts every cabinet, countertop,
-          and hardware item — with manufacturer part numbers.
+        <p style={{ fontSize:15, maxWidth:500, margin:"0 auto 36px", lineHeight:1.6, opacity:0.7 }}>
+          Upload multi-page plan PDFs. AI groups pages by room, resolves material specs
+          across sheets, then extracts each room with manufacturer part numbers.
         </p>
-        <a href="#try" style={{ padding: "12px 28px", background: "linear-gradient(135deg, #22d3ee, #6366f1)", color: "#0a0e1a", borderRadius: 8, fontWeight: 700, fontSize: 14, textDecoration: "none" }}>
-          Try It Now →
-        </a>
       </section>
 
-      {/* Features */}
-      <section id="features" style={{ padding: "60px 40px", textAlign: "center" }}>
-        <div style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "#22d3ee", marginBottom: 12 }}>NEW IN V14.2</div>
-        <h2 style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Inter', sans-serif", marginBottom: 40 }}>
-          Multi-page, multi-room extraction
-        </h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20, maxWidth: 900, margin: "0 auto" }}>
-          {[
-            { icon: "📑", title: "Multi-Page Upload", desc: "Upload 10-50 page PDFs. AI processes all pages in one pass." },
-            { icon: "🏠", title: "Room Auto-Grouping", desc: "Pages automatically grouped by room from title block text." },
-            { icon: "🔗", title: "Cross-Sheet Context", desc: "Material legend on page 1 resolves codes on pages 2-50." },
-            { icon: "🏭", title: "Manufacturer Specs", desc: "Blum, Rev-A-Shelf, Wilsonart — full part numbers extracted." },
-            { icon: "📋", title: "Per-Room Excel Tabs", desc: "One tab per room + master list + material legend + warnings." },
-            { icon: "⚠️", title: "Scope Exclusions", desc: "N.I.C. and By Others items flagged but still visible for clarity." },
-          ].map((f, i) => (
-            <div key={i} style={{ padding: "28px 24px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, textAlign: "left" }}>
-              <div style={{ fontSize: 24, marginBottom: 12 }}>{f.icon}</div>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>{f.title}</div>
-              <div style={{ fontSize: 13, opacity: 0.6, lineHeight: 1.5 }}>{f.desc}</div>
+      <section id="try" style={{ padding:"0 40px 100px", textAlign:"center" }}>
+        <div style={{ maxWidth:560, margin:"0 auto", background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:16, padding:32 }}>
+          {status === "idle" && (<>
+            <div onDrop={handleDrop} onDragOver={e => e.preventDefault()} onClick={() => fileInputRef.current?.click()}
+              style={{ border:"2px dashed rgba(34,211,238,0.3)", borderRadius:12, padding:"48px 24px", cursor:"pointer", marginBottom: file ? 16 : 0 }}>
+              <div style={{ fontSize:32, marginBottom:12 }}>📎</div>
+              <div style={{ fontSize:14, color:"#22d3ee", fontWeight:600 }}>Drop a PDF here <span style={{ opacity:0.5, color:"#e2e8f0", fontWeight:400 }}>or click to browse</span></div>
+              <div style={{ fontSize:12, opacity:0.4, marginTop:8 }}>Multi-page plan sets supported</div>
             </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Try It */}
-      <section id="try" style={{ padding: "60px 40px 100px", textAlign: "center" }}>
-        <div style={{ fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", color: "#22d3ee", marginBottom: 12 }}>LIVE DEMO</div>
-        <h2 style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Inter', sans-serif", marginBottom: 12 }}>Upload your plan set</h2>
-        <p style={{ opacity: 0.6, marginBottom: 32, fontSize: 14 }}>
-          Drop a multi-page architectural PDF and get a complete shop order with per-room tabs.
-        </p>
-
-        <div style={{ maxWidth: 520, margin: "0 auto", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, padding: 32 }}>
-          {status === "idle" && (
-            <>
-              <div onDrop={handleDrop} onDragOver={(e) => e.preventDefault()} onClick={() => fileInputRef.current?.click()}
-                style={{ border: "2px dashed rgba(34,211,238,0.3)", borderRadius: 12, padding: "48px 24px", cursor: "pointer", transition: "border-color 0.2s", marginBottom: file ? 16 : 0 }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(34,211,238,0.6)")}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(34,211,238,0.3)")}>
-                <div style={{ fontSize: 32, marginBottom: 12 }}>📎</div>
-                <div style={{ fontSize: 14, color: "#22d3ee", fontWeight: 600 }}>
-                  Drop a PDF here <span style={{ opacity: 0.5, color: "#e2e8f0", fontWeight: 400 }}>or click to browse</span>
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.4, marginTop: 8 }}>Supports multi-page plan sets (10-50+ pages)</div>
+            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display:"none" }} />
+            {file && (<div style={{ marginTop:16 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 16px", background:"rgba(34,211,238,0.08)", borderRadius:8, marginBottom:16 }}>
+                <span style={{ fontSize:13 }}>📄 {file.name} <span style={{ opacity:0.5 }}>({(file.size/1024).toFixed(0)} KB)</span></span>
+                <button onClick={e => { e.stopPropagation(); reset(); }} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13 }}>✕</button>
               </div>
-              <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display: "none" }} />
-              {file && (
-                <div style={{ marginTop: 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "rgba(34,211,238,0.08)", borderRadius: 8, marginBottom: 16 }}>
-                    <span style={{ fontSize: 13 }}>📄 {file.name} <span style={{ opacity: 0.5 }}>({(file.size / 1024).toFixed(0)} KB)</span></span>
-                    <button onClick={(e) => { e.stopPropagation(); reset(); }} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </div>
-                  <button onClick={handleExtract} disabled={!pdfReady}
-                    style={{ width: "100%", padding: "14px", background: pdfReady ? "linear-gradient(135deg, #22d3ee, #6366f1)" : "rgba(255,255,255,0.1)", color: "#0a0e1a", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: pdfReady ? "pointer" : "wait", fontFamily: "inherit" }}>
-                    {pdfReady ? "Extract All Rooms →" : "Loading PDF engine..."}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
+              <button onClick={handleExtract} disabled={!pdfReady}
+                style={{ width:"100%", padding:"14px", background: pdfReady ? "linear-gradient(135deg,#22d3ee,#6366f1)" : "rgba(255,255,255,0.1)", color:"#0a0e1a", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor: pdfReady?"pointer":"wait", fontFamily:"inherit" }}>
+                {pdfReady ? "Extract All Rooms →" : "Loading PDF engine..."}
+              </button>
+            </div>)}
+          </>)}
 
-          {(status === "reading" || status === "extracting" || status === "building") && (
-            <div style={{ padding: "40px 0" }}>
-              <div style={{ width: 48, height: 48, border: "3px solid rgba(34,211,238,0.2)", borderTop: "3px solid #22d3ee", borderRadius: "50%", margin: "0 auto 20px", animation: "spin 1s linear infinite" }} />
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{progress}</div>
-              <div style={{ fontSize: 12, opacity: 0.5, marginTop: 8 }}>
-                {status === "reading" && "Extracting text from each page..."}
-                {status === "extracting" && "Pass 1: Context → Pass 2: Room grouping → Pass 3: Per-room extraction"}
-                {status === "building" && "Building multi-tab Excel workbook..."}
-              </div>
+          {(status === "reading" || status === "analyzing" || status === "extracting" || status === "building") && (
+            <div style={{ padding:"40px 0" }}>
+              <div style={{ width:48, height:48, border:"3px solid rgba(34,211,238,0.2)", borderTop:"3px solid #22d3ee", borderRadius:"50%", margin:"0 auto 20px", animation:"spin 1s linear infinite" }} />
+              <div style={{ fontSize:14, fontWeight:600 }}>{progress}</div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
 
           {status === "done" && resultUrl && (
-            <div style={{ padding: "24px 0" }}>
-              <div style={{ fontSize: 40, marginBottom: 16 }}>✅</div>
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Extraction Complete</div>
+            <div style={{ padding:"24px 0" }}>
+              <div style={{ fontSize:40, marginBottom:16 }}>✅</div>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Extraction Complete</div>
               {stats && (
-                <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 20, lineHeight: 1.8 }}>
-                  {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items ·{" "}
-                  {stats.withDimensions} with dims · {stats.materialLegendCount || 0} materials resolved
-                  {stats.documentType !== "unknown" && ` · ${stats.documentType}`}
+                <div style={{ fontSize:12, opacity:0.6, marginBottom:20, lineHeight:1.8 }}>
+                  {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
+                  {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v142_${file?.name?.replace(".pdf", "")}.xlsx`}
-                style={{ display: "inline-block", padding: "14px 32px", background: "linear-gradient(135deg, #22c55e, #16a34a)", color: "#fff", borderRadius: 8, fontWeight: 700, fontSize: 14, textDecoration: "none", marginBottom: 12 }}>
-                ⬇ Download Excel ({stats?.roomCount || 0} room tabs)
-              </a>
-              <br />
-              <button onClick={reset} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", color: "#e2e8f0", padding: "10px 24px", borderRadius: 8, fontSize: 13, cursor: "pointer", marginTop: 8, fontFamily: "inherit" }}>
-                Extract Another
-              </button>
+              <a href={resultUrl} download={`shop_order_v142_${file?.name?.replace(".pdf","")}.xlsx`}
+                style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
+                ⬇ Download Excel
+              </a><br/>
+              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", marginTop:8, fontFamily:"inherit" }}>Extract Another</button>
             </div>
           )}
 
           {status === "error" && (
-            <div style={{ padding: "24px 0" }}>
-              <div style={{ fontSize: 40, marginBottom: 16 }}>❌</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#ef4444", marginBottom: 8 }}>{error}</div>
-              <button onClick={reset} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", color: "#e2e8f0", padding: "10px 24px", borderRadius: 8, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Try Again</button>
+            <div style={{ padding:"24px 0" }}>
+              <div style={{ fontSize:40, marginBottom:16 }}>❌</div>
+              <div style={{ fontSize:14, fontWeight:600, color:"#ef4444", marginBottom:8 }}>{error}</div>
+              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Try Again</button>
             </div>
           )}
         </div>
       </section>
 
-      {/* Footer */}
-      <footer style={{ textAlign: "center", padding: "40px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, opacity: 0.4 }}>
+      <footer style={{ textAlign:"center", padding:"40px 20px", borderTop:"1px solid rgba(255,255,255,0.06)", fontSize:12, opacity:0.4 }}>
         © 2026 ProjMgtAI — Construction Intelligence, not guesswork.
       </footer>
     </main>
