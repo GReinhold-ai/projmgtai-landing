@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.2, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.3, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -276,13 +276,25 @@ COLUMN ORDER IS CRITICAL — every row must follow this exact field order:
   item_type;room;qty;description;section_id;unit;width_mm;depth_mm;height_mm;dim_source;material_code;material;...
 The FIRST field is ALWAYS item_type (e.g. "base_cabinet", "scope_exclusion").
 The FOURTH field is ALWAYS description (free text).
-NEVER put the description first. NEVER swap item_type and description.
+NEVER put the room name as item_type. NEVER repeat the room name across multiple fields.
 
-SCOPE_EXCLUSION FORMAT:
-For items not in millwork scope (TVs, AV equipment, by others), use:
-  scope_exclusion;RoomName;1;Short description of item;section;EA;width;depth;height;...
-The description should be SHORT (e.g. "75 TV Samsung ED-75D - By ProAV"). 
-Do NOT embed TOON-formatted data or field values inside the description.
+EXAMPLE OUTPUT (for a room called "Reception Desk"):
+  assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;...
+  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1168;610;864;extracted;PL-01;Plastic Laminate;...
+  countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;...
+  fixed_shelf;Reception Desk;1;CPU Shelf;9;EA;762;610;19;extracted;PL-01;PLAM;...
+  grommet;Reception Desk;8;Desk Grommets;;EA;;;;unknown;;;;...
+  scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;...
+
+SCOPE_EXCLUSION vs MILLWORK — CRITICAL:
+- scope_exclusion is ONLY for items NOT built/installed by the millwork contractor
+  Examples: TVs, AV equipment, plumbing fixtures, electrical by others, items marked "NIC" or "By Others"
+- Vendor-supplied lockers, benches, towel stations, and casework components that are SPECIFIED 
+  IN THE MILLWORK PLANS are MILLWORK items (tall_cabinet, base_cabinet, etc.) even if a brand 
+  name like "Club Resource Group" or a model number is listed. These are items the millwork 
+  sub will procure and install.
+- Only mark as scope_exclusion if the text explicitly says "By Others", "NIC", "Not In Contract",
+  "By GC", "By Owner", or similar exclusion language.
 
 ASSEMBLY RULES:
 - If text describes a single built assembly, create parent row with item_type="assembly"
@@ -477,13 +489,16 @@ function sanitizeToon(toon: string): string {
 
 function cleanupRows(rows: any[]): any[] {
   return rows.map(row => {
-    // Fix column shift: if item_type looks like a description (long text, spaces, not a valid type)
-    // and another field contains a valid item_type, swap them
     const itemType = (row.item_type || "").trim();
     
+    // Pattern D: Room name is a unit value (EA, LF, SF, LOT) — entire row is garbled
+    // These rows are unsalvageable, mark for filtering
+    if (/^(EA|LF|SF|LOT|LS)$/i.test((row.room || "").trim())) {
+      row._garbled = true;
+      return row;
+    }
+    
     if (itemType && !VALID_ITEM_TYPES.has(itemType)) {
-      // item_type field has something that's not a valid type
-      // Check common shift patterns:
       
       // Pattern A: section_id has a valid item_type — fields shifted right by 2
       if (row.section_id && VALID_ITEM_TYPES.has(row.section_id.trim())) {
@@ -501,60 +516,57 @@ function cleanupRows(rows: any[]): any[] {
         if (realWidth && !isNaN(Number(realWidth))) row.width_mm = Number(realWidth);
         if (realDepth && !isNaN(Number(realDepth))) row.depth_mm = Number(realDepth);
       }
-      // Pattern C: item_type equals the room name (e.g. "Reception Desk" in item_type)
-      // and section_id has the real description (e.g. "CPU Shelf", "3Form Panel Front")
-      // This is the LLM outputting: roomName;roomName;roomName;description;width;...
+      // Pattern C: item_type equals the room name (LLM repeated room name across fields)
+      // section_id has the real description
       else if (itemType === row.room && row.section_id && row.section_id.length > 2) {
-        const realDesc = row.section_id; // section_id has the actual description
-        const realWidth = row.qty; // qty position has width
-        const realMaterial = row.depth_mm; // depth position has material name
-        const realUnit = row.unit; // unit may have width or "EA"
+        const realDesc = row.section_id;
+        const realWidth = row.qty;
+        const realMaterial = row.depth_mm;
         
         // Infer item_type from the description
         const descLower = realDesc.toLowerCase();
         let inferredType = "assembly";
         if (/counter/i.test(descLower)) inferredType = "countertop";
         else if (/panel|3form|frp/i.test(descLower)) inferredType = "decorative_panel";
-        else if (/shelf|cpu/i.test(descLower)) inferredType = descLower.includes("adjust") ? "adjustable_shelf" : "fixed_shelf";
+        else if (/adjust.*shelf/i.test(descLower)) inferredType = "adjustable_shelf";
+        else if (/shelf|cpu/i.test(descLower)) inferredType = "fixed_shelf";
         else if (/rubber.*base|base.*rubber/i.test(descLower)) inferredType = "rubber_base";
         else if (/channel/i.test(descLower)) inferredType = "channel";
         else if (/trim|aluminum.*trim/i.test(descLower)) inferredType = "trim";
         else if (/substrate|plywood.*sub/i.test(descLower)) inferredType = "substrate";
-        else if (/j.?box/i.test(descLower)) inferredType = "j_box";
+        else if (/j.?box|junction/i.test(descLower)) inferredType = "j_box";
         else if (/conduit/i.test(descLower)) inferredType = "conduit";
         else if (/grommet/i.test(descLower)) inferredType = "grommet";
         else if (/hinge/i.test(descLower)) inferredType = "piano_hinge";
         else if (/cabinet|drawer/i.test(descLower)) inferredType = "base_cabinet";
         else if (/assembly/i.test(descLower)) inferredType = "assembly";
+        else if (/shower.*rod|rod/i.test(descLower)) inferredType = "scope_exclusion";
+        else if (/printer|monitor|cctv|telephone|terminal|pos\b|scanner/i.test(descLower)) inferredType = "scope_exclusion";
         
         row.item_type = inferredType;
         row.description = realDesc;
         row.section_id = "";
         
-        // Try to parse width from qty field (might be a number like "762")
+        // Parse width from qty if it's a plausible dimension
         if (realWidth && !isNaN(Number(realWidth)) && Number(realWidth) > 10) {
           row.width_mm = Number(realWidth);
         }
         row.qty = 1;
         row.unit = "EA";
         
-        // Material was in depth_mm position
+        // Material in depth_mm
         if (realMaterial && typeof realMaterial === "string" && isNaN(Number(realMaterial))) {
           row.material = realMaterial;
           row.depth_mm = "";
         }
       }
-      // Pattern B: item_type has a description-like value but other fields make sense
+      // Pattern B: infer type from keywords
       else {
-        // Check if description field has a valid item_type
         const desc = (row.description || "").trim();
         if (VALID_ITEM_TYPES.has(desc)) {
-          // Swap item_type and description
           row.description = itemType;
           row.item_type = desc;
-        }
-        // Otherwise, try to infer type from description keywords
-        else {
+        } else {
           const combined = `${itemType} ${desc}`.toLowerCase();
           if (/rubber.*base|floor.*base/i.test(combined)) row.item_type = "rubber_base";
           else if (/adjustable.*shelf/i.test(combined)) row.item_type = "adjustable_shelf";
@@ -570,7 +582,6 @@ function cleanupRows(rows: any[]): any[] {
           else if (/counter/i.test(combined)) row.item_type = "countertop";
           else if (/locker|cabinet/i.test(combined)) row.item_type = "base_cabinet";
           
-          // If item_type was a description and description is the room name, fix it
           if (desc === row.room || !desc) {
             row.description = itemType;
           }
@@ -603,6 +614,8 @@ function cleanupRows(rows: any[]): any[] {
     
     return row;
   }).filter(row => {
+    // Remove garbled rows (Pattern D)
+    if (row._garbled) return false;
     // Must have a description or item_type
     if (!row.description && !row.item_type) return false;
     // Description shouldn't be a single word that looks like a column value
@@ -627,7 +640,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.2] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.3] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -665,13 +678,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.2] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.3] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.2", mode: "analyze",
+        ok: true, version: "v14.3.3", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -730,7 +743,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const row of cleanedRows) { row.room = row.room || roomName; }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.2", mode: "extract",
+      ok: true, version: "v14.3.3", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -746,7 +759,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.2] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.2", error: err?.message || "Unknown error" });
+    console.error("[v14.3.3] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.3", error: err?.message || "Unknown error" });
   }
 }
