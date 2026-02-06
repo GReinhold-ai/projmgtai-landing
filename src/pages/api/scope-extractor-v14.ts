@@ -476,19 +476,38 @@ function buildUserPrompt(
   return parts.join("\n");
 }
 
-// ─── LLM Call ────────────────────────────────────────────────────
+// ─── LLM Call (with rate limit retry) ────────────────────────────
 
 async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<string> {
-  const message = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 8192,
-    temperature: 0.05,
-    system: systemPrompt,
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  const maxRetries = 3;
 
-  const textBlock = message.content.find((b: any) => b.type === "text");
-  return textBlock?.text?.trim() ?? "";
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const message = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 8192,
+        temperature: 0.05,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      });
+
+      const textBlock = message.content.find((b: any) => b.type === "text");
+      return textBlock?.text?.trim() ?? "";
+    } catch (err: any) {
+      const status = err?.status || err?.error?.status;
+      const isRateLimit = status === 429 || err?.error?.type === "rate_limit_error";
+
+      if (isRateLimit && attempt < maxRetries) {
+        // Exponential backoff: 15s, 30s, 60s
+        const waitMs = 15000 * Math.pow(2, attempt);
+        console.log(`[v14.2] Rate limited, waiting ${waitMs / 1000}s (attempt ${attempt + 1}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Max retries exceeded for Anthropic API");
 }
 
 // ─── Parse Pages from Text ───────────────────────────────────────
@@ -568,14 +587,33 @@ export default async function handler(
     let totalLlmMs = 0;
     let totalPostMs = 0;
 
-    for (const room of roomGroups) {
+    for (let ri = 0; ri < roomGroups.length; ri++) {
+      const room = roomGroups[ri];
+
+      // Rate limit protection: wait between rooms (skip first)
+      if (ri > 0) {
+        await new Promise(resolve => setTimeout(resolve, 5000)); // 5s between rooms
+      }
+
       // Pre-process combined text for this room
       const tPre = Date.now();
       const hints = preprocess(room.combinedText, sheetRef);
       const preMs = Date.now() - tPre;
 
-      // Build prompt with project context
-      const userPrompt = buildUserPrompt(room, hints, projectContext, projectId);
+      // Build prompt with project context — truncate if too large
+      let userPrompt = buildUserPrompt(room, hints, projectContext, projectId);
+
+      // Cap prompt at ~20K chars to stay under token limits
+      if (userPrompt.length > 20000) {
+        // Trim the OCR text section, keep hints and context
+        const ocrStart = userPrompt.indexOf('## OCR TEXT');
+        if (ocrStart > 0) {
+          const beforeOcr = userPrompt.substring(0, ocrStart);
+          const ocrSection = userPrompt.substring(ocrStart);
+          const truncatedOcr = ocrSection.substring(0, 20000 - beforeOcr.length) + '\n"""\n\n[TRUNCATED — text exceeded token budget]\n\nOutput ONLY valid TOON with this exact header:\n' + HEADER_V14;
+          userPrompt = beforeOcr + truncatedOcr;
+        }
+      }
 
       // LLM extraction
       const tLlm = Date.now();

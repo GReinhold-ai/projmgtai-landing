@@ -90,7 +90,11 @@ export default function HomePage() {
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-        throw new Error(err.error || `Extraction failed (${response.status})`);
+        const msg = err.error || `Extraction failed (${response.status})`;
+        if (response.status === 429 || msg.includes("rate_limit")) {
+          throw new Error("API rate limit reached. Please wait 30 seconds and try again.");
+        }
+        throw new Error(msg);
       }
 
       const result = await response.json();
