@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.6, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.7, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -279,13 +279,13 @@ The FOURTH field is ALWAYS description (free text).
 NEVER put the room name as item_type. NEVER repeat the room name across multiple fields.
 
 EXAMPLE OUTPUT (for a room called "Reception Desk"):
-  assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;...
-  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;...
-  countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;...
-  transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;...
-  fixed_shelf;Reception Desk;1;CPU Shelf;9;EA;762;610;19;extracted;PL-01;PLAM;...
-  grommet;Reception Desk;8;Desk Grommets;;EA;;;;unknown;;;;...
-  scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;...
+  assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;A8.10;high;
+  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;A8.10;high;
+  countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;;high;
+  transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;;high;
+  decorative_panel;Reception Desk;2;3Form Panel Front;;EA;;;;unknown;3FORM;3Form Chroma Vapor;;medium;
+  rubber_base;Reception Desk;1;Black Rubber Base;;LF;;;;unknown;FB-01;Rubber Base;;medium;
+  scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;low;
 
 SCOPE_EXCLUSION vs MILLWORK — CRITICAL:
 - scope_exclusion is ONLY for items NOT built/installed by the millwork contractor
@@ -339,10 +339,22 @@ RECEPTION DESK / SERVICE COUNTERS:
 - If granite or stone, use material_code "GRANITE" or "STONE" and describe in material field
 - Count each distinct transaction top shape as its own item with qty
 
-MATERIAL RULES:
-- material_code for parsed codes (PL-01, SS-1B, etc.)
-- material for free text description
-- Every material in hints should appear on at least one item`.trim();
+MATERIAL RULES — CRITICAL:
+- material_code: the CODE from the legend or hints (PL-01, SS-1B, WC-4A, FB-1, etc.)
+- material: the full text description (Plastic Laminate, Solid Surface, etc.)
+- EVERY millwork item (cabinets, countertops, panels, shelves, substrates) MUST have a 
+  material_code if one appears in the PRE-EXTRACTED MATERIALS or PROJECT MATERIAL LEGEND.
+  Match by context: cabinet bodies typically use PL-xx, countertops use SS-xx or QZ-xx,
+  wall panels use WC-xx, rubber base uses FB-xx, substrates use PLY.
+- If the same material applies to all cabinet sections (e.g. PL-01), apply it to every section.
+- If no code matches, leave material_code empty but still fill material with descriptive text.
+- Hardware-type items (hinges, grommets) may not have material codes — that's OK.
+
+ROOM NAME RULES:
+- The room field must be EXACTLY the room name provided (e.g. "Team Members", "Reception Desk").
+- NEVER use an item description, material name, or specification as the room name.
+- If you extract a decorative panel "FRP Wall Panel WC-4A", the room is still "Team Members" 
+  (or whatever room was specified), NOT "FRP Wall Panel WC-4A".`.trim();
 
   if (ctx.documentType === "shop_drawing" || ctx.materialLegend.length > 0) {
     p += `
@@ -630,7 +642,10 @@ function cleanupRows(rows: any[]): any[] {
     if (row.description) {
       row.description = row.description
         .replace(/;/g, ",")
-        .replace(/,(?:Service Manager|Reception Desk|Team Members|Kids Club|Team Room|Unclassified|Retail Display|Laundry|Janitor|Pool Area|Mens Vanity|Womens Vanity|Building Wide),\d.*/i, "")
+        // Strip comma-embedded TOON data: ",RoomName,..." or ",qty,,qty,EA,..." patterns
+        .replace(/,(?:Service Manager|Reception Desk|Team Members|Kids Club|Team Room|Unclassified|Retail Display|Laundry|Janitor|Pool Area|Mens Vanity|Womens Vanity|Building Wide|Men's Locker Room|Women's Locker Room|First Floor)[,].*/i, "")
+        // Also strip: ",,,1,EA,1234" style trailing TOON fragments  
+        .replace(/,{2,}\d*,(?:EA|LF|SF|LOT),?\d*.*$/i, "")
         .trim();
     }
     
@@ -662,7 +677,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.6] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.7] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -700,13 +715,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.6] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.7] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.6", mode: "analyze",
+        ok: true, version: "v14.3.7", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -762,10 +777,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    for (const row of cleanedRows) { row.room = row.room || roomName; }
+    // v14.3.7: ALWAYS override room to the API-provided roomName.
+    // The LLM sometimes puts descriptions or material names in the room field.
+    for (const row of cleanedRows) { row.room = roomName; }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.6", mode: "extract",
+      ok: true, version: "v14.3.7", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -781,7 +798,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.6] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.6", error: err?.message || "Unknown error" });
+    console.error("[v14.3.7] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.7", error: err?.message || "Unknown error" });
   }
 }

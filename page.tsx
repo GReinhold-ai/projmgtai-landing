@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.3.6 — Client-driven room-by-room extraction
+// ProjMgtAI v14.3.7 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -174,6 +174,14 @@ export default function HomePage() {
 
     // ─── Assembly Enrichment ───────────────────────────────────
     // For each assembly row, compute overall dims + summary from child items in same room
+    const VALID_ITEM_TYPES_SET = new Set([
+      "assembly","base_cabinet","upper_cabinet","tall_cabinet","countertop","transaction_top",
+      "decorative_panel","trim","channel","rubber_base","substrate","concealed_hinge",
+      "piano_hinge","grommet","adjustable_shelf","fixed_shelf","cpu_shelf","drawer",
+      "file_drawer","trash_drawer","rollout_basket","conduit","j_box","equipment_cutout",
+      "safe_cabinet","controls_cabinet","end_panel","corner_guard","corner_detail",
+      "stainless_panel","hanger_support","scope_exclusion",
+    ]);
     const enrichAssemblies = (items: any[]) => {
       const roomItems: Record<string, any[]> = {};
       for (const r of items) {
@@ -207,8 +215,8 @@ export default function HomePage() {
 
           const t = c.item_type || "item";
           typeCounts[t] = (typeCounts[t] || 0) + (Number(c.qty) || 1);
-          if (c.material) materials.add(c.material);
-          if (c.material_code) matCodes.add(c.material_code);
+          if (c.material && !VALID_ITEM_TYPES_SET.has(c.material)) materials.add(c.material);
+          if (c.material_code && !VALID_ITEM_TYPES_SET.has(c.material_code)) matCodes.add(c.material_code);
         }
 
         // Build summary description
@@ -227,8 +235,18 @@ export default function HomePage() {
           equipment_cutout: "equip. cutout", hanger_support: "support",
           cpu_shelf: "CPU shelf", rollout_basket: "rollout basket",
         };
-        // Sort by count desc
-        const sorted = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
+        // Sort by priority then count desc
+        const typePriority: Record<string, number> = {
+          base_cabinet: 1, upper_cabinet: 1, tall_cabinet: 1, countertop: 2,
+          transaction_top: 2, decorative_panel: 3, trim: 4, channel: 4,
+          fixed_shelf: 5, adjustable_shelf: 5, cpu_shelf: 5,
+          drawer: 5, file_drawer: 5, trash_drawer: 5, safe_cabinet: 5,
+          rubber_base: 6, substrate: 6, conduit: 7, j_box: 7,
+          grommet: 8, concealed_hinge: 8, piano_hinge: 8, hanger_support: 8,
+          equipment_cutout: 7, rollout_basket: 5,
+        };
+        const sorted = Object.entries(typeCounts)
+          .sort((a, b) => (typePriority[a[0]] || 9) - (typePriority[b[0]] || 9) || b[1] - a[1]);
         for (const [type, count] of sorted) {
           const name = typeNames[type] || type.replace(/_/g, " ");
           parts.push(`(${count}) ${name}${count > 1 ? "s" : ""}`);
@@ -256,7 +274,7 @@ export default function HomePage() {
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.6"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.7"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -410,13 +428,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.6 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.7 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.3.6 — Improved room detection & dimension extraction
+          ★ v14.3.7 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -468,7 +486,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1436_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1437_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
