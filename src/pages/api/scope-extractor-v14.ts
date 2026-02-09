@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.4, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.6, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -280,8 +280,9 @@ NEVER put the room name as item_type. NEVER repeat the room name across multiple
 
 EXAMPLE OUTPUT (for a room called "Reception Desk"):
   assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;...
-  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1168;610;864;extracted;PL-01;Plastic Laminate;...
+  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;...
   countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;...
+  transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;...
   fixed_shelf;Reception Desk;1;CPU Shelf;9;EA;762;610;19;extracted;PL-01;PLAM;...
   grommet;Reception Desk;8;Desk Grommets;;EA;;;;unknown;;;;...
   scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;...
@@ -302,10 +303,11 @@ ASSEMBLY RULES:
 - Each cabinet section = separate item with section_id
 
 ITEM TYPES: assembly, base_cabinet, upper_cabinet, tall_cabinet, countertop,
-decorative_panel, trim, channel, rubber_base, substrate, concealed_hinge, piano_hinge,
-grommet, adjustable_shelf, fixed_shelf, cpu_shelf, drawer, file_drawer, trash_drawer,
-rollout_basket, conduit, j_box, equipment_cutout, safe_cabinet, controls_cabinet,
-end_panel, corner_guard, corner_detail, stainless_panel, hanger_support, scope_exclusion
+transaction_top, decorative_panel, trim, channel, rubber_base, substrate, concealed_hinge,
+piano_hinge, grommet, adjustable_shelf, fixed_shelf, cpu_shelf, drawer, file_drawer,
+trash_drawer, rollout_basket, conduit, j_box, equipment_cutout, safe_cabinet,
+controls_cabinet, end_panel, corner_guard, corner_detail, stainless_panel, hanger_support,
+scope_exclusion
 
 DIMENSION RULES — CRITICAL:
 - Use dimensions from PRE-EXTRACTED HINTS. Match to items by context.
@@ -316,6 +318,26 @@ DIMENSION RULES — CRITICAL:
 - dim_source: "extracted" | "calculated" | "unknown"
 - ALWAYS check the PRE-EXTRACTED DIMENSIONS section — these are reliable regex matches from the OCR.
   Map them to the correct items by reading the surrounding context.
+
+DIMENSION ASSIGNMENT (W/D/H):
+- W = WIDTH: the LONG horizontal dimension of the section front face (the run length).
+  For a cabinet section measured along the countertop run, this is the face width.
+  Example: section 18A is 4'-5 1/2" wide → W = 1359mm
+- D = DEPTH: the SHORT horizontal dimension, front-to-back.
+  Example: cabinet depth 2'-0" → D = 610mm
+- H = HEIGHT: the vertical dimension.
+  Example: cabinet height 2'-10" → H = 864mm
+- When plan dimensions show run lengths (e.g. "4'-5 1/2", 1'-3", 2'-6"), these are section WIDTHS.
+  The front-to-back measurement (typically 2'-0" to 2'-6") is the DEPTH.
+- DO NOT put depth in the width column. If the only dimension you see is depth, put it in D.
+
+RECEPTION DESK / SERVICE COUNTERS:
+- Capture each side/run as groups of cabinet sections
+- Transaction tops (raised customer-facing surfaces, often oval or shaped granite/stone) 
+  should be separate rows with item_type="transaction_top"
+- If the material is called "solid surface" (like Corian) use material_code SS-xx
+- If granite or stone, use material_code "GRANITE" or "STONE" and describe in material field
+- Count each distinct transaction top shape as its own item with qty
 
 MATERIAL RULES:
 - material_code for parsed codes (PL-01, SS-1B, etc.)
@@ -421,7 +443,7 @@ function buildUserPrompt(
 // Known valid item_type values for detection
 const VALID_ITEM_TYPES = new Set([
   "assembly", "base_cabinet", "upper_cabinet", "tall_cabinet", "countertop",
-  "decorative_panel", "trim", "channel", "rubber_base", "substrate",
+  "transaction_top", "decorative_panel", "trim", "channel", "rubber_base", "substrate",
   "concealed_hinge", "piano_hinge", "grommet", "adjustable_shelf", "fixed_shelf",
   "cpu_shelf", "drawer", "file_drawer", "trash_drawer", "rollout_basket",
   "conduit", "j_box", "equipment_cutout", "safe_cabinet", "controls_cabinet",
@@ -640,7 +662,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.4] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.6] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -678,13 +700,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.4] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.6] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.4", mode: "analyze",
+        ok: true, version: "v14.3.6", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -743,7 +765,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const row of cleanedRows) { row.room = row.room || roomName; }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.4", mode: "extract",
+      ok: true, version: "v14.3.6", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -759,7 +781,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.4] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.4", error: err?.message || "Unknown error" });
+    console.error("[v14.3.6] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.6", error: err?.message || "Unknown error" });
   }
 }

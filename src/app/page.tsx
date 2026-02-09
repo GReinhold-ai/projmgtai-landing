@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.3.4 — Client-driven room-by-room extraction
+// ProjMgtAI v14.3.6 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -172,9 +172,91 @@ export default function HomePage() {
     const XLSX = await loadSheetJS();
     const wb = XLSX.utils.book_new();
 
+    // ─── Assembly Enrichment ───────────────────────────────────
+    // For each assembly row, compute overall dims + summary from child items in same room
+    const enrichAssemblies = (items: any[]) => {
+      const roomItems: Record<string, any[]> = {};
+      for (const r of items) {
+        const room = r.room || "Unclassified";
+        if (!roomItems[room]) roomItems[room] = [];
+        roomItems[room].push(r);
+      }
+      for (const room of Object.keys(roomItems)) {
+        const ri = roomItems[room];
+        const assemblies = ri.filter((r: any) => r.item_type === "assembly");
+        const children = ri.filter((r: any) => r.item_type !== "assembly" && r.item_type !== "scope_exclusion");
+        if (!assemblies.length) continue;
+
+        // Compute overall dims: max width sum (total LF), max depth, max height
+        let totalLF = 0; let maxW = 0; let maxD = 0; let maxH = 0;
+        const typeCounts: Record<string, number> = {};
+        const materials = new Set<string>();
+        const matCodes = new Set<string>();
+
+        for (const c of children) {
+          const w = Number(c.width_mm) || 0;
+          const d = Number(c.depth_mm) || 0;
+          const h = Number(c.height_mm) || 0;
+          if (w > maxW) maxW = w;
+          if (d > maxD) maxD = d;
+          if (h > maxH) maxH = h;
+
+          // Extract LF from notes
+          const lfMatch = ((c.notes || "") + " " + (c.description || "")).match(/(\d+\.?\d*)\s*LF/);
+          if (lfMatch) totalLF += parseFloat(lfMatch[1]);
+
+          const t = c.item_type || "item";
+          typeCounts[t] = (typeCounts[t] || 0) + (Number(c.qty) || 1);
+          if (c.material) materials.add(c.material);
+          if (c.material_code) matCodes.add(c.material_code);
+        }
+
+        // Build summary description
+        const parts: string[] = [];
+        const typeNames: Record<string, string> = {
+          base_cabinet: "base cabinet", upper_cabinet: "upper cabinet",
+          tall_cabinet: "tall cabinet", countertop: "countertop",
+          transaction_top: "transaction top",
+          decorative_panel: "decorative panel", fixed_shelf: "shelf",
+          adjustable_shelf: "adj. shelf", drawer: "drawer",
+          file_drawer: "file drawer", trash_drawer: "trash drawer",
+          grommet: "grommet", conduit: "conduit", j_box: "j-box",
+          safe_cabinet: "safe cabinet", trim: "trim", channel: "channel",
+          rubber_base: "rubber base", substrate: "substrate",
+          piano_hinge: "hinge", concealed_hinge: "hinge",
+          equipment_cutout: "equip. cutout", hanger_support: "support",
+          cpu_shelf: "CPU shelf", rollout_basket: "rollout basket",
+        };
+        // Sort by count desc
+        const sorted = Object.entries(typeCounts).sort((a, b) => b[1] - a[1]);
+        for (const [type, count] of sorted) {
+          const name = typeNames[type] || type.replace(/_/g, " ");
+          parts.push(`(${count}) ${name}${count > 1 ? "s" : ""}`);
+        }
+        const matStr = matCodes.size > 0 ? `. Materials: ${[...matCodes].join(", ")}` : "";
+        const lfStr = totalLF > 0 ? ` — ${totalLF.toFixed(1)} LF total` : "";
+        const summaryDesc = `Custom millwork assembly: ${parts.join(", ")}${lfStr}${matStr}`;
+
+        // Overall dimension: use totalLF*304.8 for width if available, else maxW
+        const overallW = totalLF > 0 ? Math.round(totalLF * 304.8) : (maxW || "");
+        const overallD = maxD || "";
+        const overallH = maxH || "";
+
+        for (const assy of assemblies) {
+          if (!assy.description || assy.description === `${room} Assembly` || /assembly$/i.test(assy.description)) {
+            assy.description = summaryDesc;
+          }
+          if (!assy.width_mm && overallW) assy.width_mm = overallW;
+          if (!assy.depth_mm && overallD) assy.depth_mm = overallD;
+          if (!assy.height_mm && overallH) assy.height_mm = overallH;
+        }
+      }
+    };
+    enrichAssemblies(rows);
+
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.4"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.6"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -328,13 +410,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.4 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.6 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.3.4 — Improved room detection & dimension extraction
+          ★ v14.3.6 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -386,7 +468,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1434_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1436_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
