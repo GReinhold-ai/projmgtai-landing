@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.10, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.11, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -627,20 +627,6 @@ function cleanupRows(rows: any[]): any[] {
       }
     }
     
-    // Clean material_code: if it's a long string (description leaked in) or a confidence value
-    if (row.material_code && (row.material_code.length > 20 || /^(high|medium|low)$/i.test(row.material_code))) {
-      // Check if confidence is in material and material_code has description
-      if (/^(high|medium|low)$/i.test(row.material)) {
-        row.confidence = row.material;
-        row.material = "";
-      }
-      if (row.material_code.length > 20) {
-        // Description leaked into material_code — move to notes if notes is empty
-        if (!row.notes) row.notes = row.material_code;
-      }
-      row.material_code = "";
-    }
-    
     // Clean description of any remaining semicolons or commas with TOON patterns
     if (row.description) {
       row.description = row.description
@@ -680,7 +666,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.10] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.11] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -718,13 +704,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.10] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.11] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.10", mode: "analyze",
+        ok: true, version: "v14.3.11", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -780,10 +766,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.10: ALWAYS override room to the API-provided roomName.
+    // v14.3.11: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.3.10: Postprocess material code assignment from hints (with error safety)
+    // v14.3.11: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -838,10 +824,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.3.10] material assign error:", e); }
+    } catch (e) { console.error("[v14.3.11] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.10", mode: "extract",
+      ok: true, version: "v14.3.11", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -857,7 +843,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.10] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.10", error: err?.message || "Unknown error" });
+    console.error("[v14.3.11] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.11", error: err?.message || "Unknown error" });
   }
 }
