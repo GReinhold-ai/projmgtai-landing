@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.7, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.8, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -339,22 +339,11 @@ RECEPTION DESK / SERVICE COUNTERS:
 - If granite or stone, use material_code "GRANITE" or "STONE" and describe in material field
 - Count each distinct transaction top shape as its own item with qty
 
-MATERIAL RULES — CRITICAL:
-- material_code: the CODE from the legend or hints (PL-01, SS-1B, WC-4A, FB-1, etc.)
-- material: the full text description (Plastic Laminate, Solid Surface, etc.)
-- EVERY millwork item (cabinets, countertops, panels, shelves, substrates) MUST have a 
-  material_code if one appears in the PRE-EXTRACTED MATERIALS or PROJECT MATERIAL LEGEND.
-  Match by context: cabinet bodies typically use PL-xx, countertops use SS-xx or QZ-xx,
-  wall panels use WC-xx, rubber base uses FB-xx, substrates use PLY.
-- If the same material applies to all cabinet sections (e.g. PL-01), apply it to every section.
-- If no code matches, leave material_code empty but still fill material with descriptive text.
-- Hardware-type items (hinges, grommets) may not have material codes — that's OK.
-
-ROOM NAME RULES:
-- The room field must be EXACTLY the room name provided (e.g. "Team Members", "Reception Desk").
-- NEVER use an item description, material name, or specification as the room name.
-- If you extract a decorative panel "FRP Wall Panel WC-4A", the room is still "Team Members" 
-  (or whatever room was specified), NOT "FRP Wall Panel WC-4A".`.trim();
+MATERIAL RULES:
+- material_code: code from hints/legend (PL-01, SS-1B, WC-4A, FB-1, etc.)
+- material: full text description (Plastic Laminate, Solid Surface, etc.)
+- Apply material codes from PRE-EXTRACTED MATERIALS to matching items.
+- If same material applies to all cabinet sections (e.g. PL-01), apply to every section.`.trim();
 
   if (ctx.documentType === "shop_drawing" || ctx.materialLegend.length > 0) {
     p += `
@@ -677,7 +666,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.7] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.8] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -715,13 +704,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.7] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.8] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.7", mode: "analyze",
+        ok: true, version: "v14.3.8", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -777,12 +766,65 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.7: ALWAYS override room to the API-provided roomName.
-    // The LLM sometimes puts descriptions or material names in the room field.
+    // v14.3.8: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
+    // v14.3.8: Postprocess material code assignment from hints
+    // If the LLM didn't assign material codes, infer them from hints + item type
+    const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
+      // Build code→info map from hints and legend
+      const codeMap: Record<string, { code: string; name: string; category: string }> = {};
+      for (const m of matHints) {
+        codeMap[m.code] = { code: m.code, name: m.fullName || m.code, category: m.category || "" };
+      }
+      for (const l of legend) {
+        codeMap[l.code] = { code: l.code, name: l.productName || l.code, category: l.category || "" };
+      }
+
+      // Classify codes by typical usage
+      const plCodes = Object.keys(codeMap).filter(c => /^PL-/i.test(c));
+      const ssCodes = Object.keys(codeMap).filter(c => /^SS-/i.test(c));
+      const wcCodes = Object.keys(codeMap).filter(c => /^WC-/i.test(c));
+      const fbCodes = Object.keys(codeMap).filter(c => /^FB-/i.test(c));
+      const plyCodes = Object.keys(codeMap).filter(c => /^PLY/i.test(c));
+
+      for (const row of rows) {
+        if (row.material_code || row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
+
+        const desc = (row.description || "").toLowerCase();
+        const mat = (row.material || "").toLowerCase();
+        const combined = `${desc} ${mat}`;
+
+        // Try to find material code mentioned in description
+        for (const code of Object.keys(codeMap)) {
+          if (combined.includes(code.toLowerCase())) {
+            row.material_code = code;
+            if (!row.material) row.material = codeMap[code].name;
+            break;
+          }
+        }
+        if (row.material_code) continue;
+
+        // Infer by item type
+        const t = row.item_type || "";
+        if (/base_cabinet|upper_cabinet|tall_cabinet|cpu_shelf|fixed_shelf|adjustable_shelf|drawer|file_drawer|trash_drawer|safe_cabinet/.test(t)) {
+          if (plCodes.length > 0) { row.material_code = plCodes[0]; row.material = row.material || codeMap[plCodes[0]].name; }
+        } else if (/countertop/.test(t)) {
+          if (ssCodes.length > 0) { row.material_code = ssCodes[0]; row.material = row.material || codeMap[ssCodes[0]].name; }
+        } else if (/decorative_panel/.test(t) && /frp|fiberglass/i.test(combined)) {
+          if (wcCodes.length > 0) { row.material_code = wcCodes[0]; row.material = row.material || codeMap[wcCodes[0]].name; }
+        } else if (/rubber_base/.test(t)) {
+          if (fbCodes.length > 0) { row.material_code = fbCodes[0]; row.material = row.material || codeMap[fbCodes[0]].name; }
+        } else if (/substrate/.test(t)) {
+          if (plyCodes.length > 0) { row.material_code = plyCodes[0]; row.material = row.material || codeMap[plyCodes[0]].name; }
+          else { row.material_code = "PLY"; row.material = row.material || "Plywood"; }
+        }
+      }
+    };
+    assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
+
     return res.status(200).json({
-      ok: true, version: "v14.3.7", mode: "extract",
+      ok: true, version: "v14.3.8", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -798,7 +840,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.7] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.7", error: err?.message || "Unknown error" });
+    console.error("[v14.3.8] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.8", error: err?.message || "Unknown error" });
   }
 }
