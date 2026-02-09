@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.9, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.10, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -680,7 +680,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.9] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.10] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -718,13 +718,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.9] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.10] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.9", mode: "analyze",
+        ok: true, version: "v14.3.10", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -780,17 +780,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.9: ALWAYS override room to the API-provided roomName.
+    // v14.3.10: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.3.9: Postprocess material code assignment from hints
+    // v14.3.10: Postprocess material code assignment from hints (with error safety)
+    try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
+      if (!matHints || !legend || !rows) return;
       const codeMap: Record<string, { code: string; name: string; category: string }> = {};
-      for (const m of matHints) {
-        codeMap[m.code] = { code: m.code, name: m.fullName || m.code, category: m.category || "" };
+      for (const m of (matHints || [])) {
+        if (m?.code) codeMap[m.code] = { code: m.code, name: m.fullName || m.code, category: m.category || "" };
       }
-      for (const l of legend) {
-        codeMap[l.code] = { code: l.code, name: l.productName || l.code, category: l.category || "" };
+      for (const l of (legend || [])) {
+        if (l?.code) codeMap[l.code] = { code: l.code, name: l.productName || l.code, category: l.category || "" };
       }
 
       const plCodes = Object.keys(codeMap).filter(c => /^PL-/i.test(c));
@@ -799,58 +801,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const fbCodes = Object.keys(codeMap).filter(c => /^FB-/i.test(c));
 
       for (const row of rows) {
-        if (row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
-        if (row.material_code && !VALID_ITEM_TYPES.has(row.material_code)) continue; // already has valid code
+        try {
+        if (!row || row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
+        const matCode = String(row.material_code || "");
+        if (matCode && !VALID_ITEM_TYPES.has(matCode)) continue;
+        if (matCode && VALID_ITEM_TYPES.has(matCode)) row.material_code = "";
 
-        // Clean invalid material_code (item_type values that leaked in)
-        if (row.material_code && VALID_ITEM_TYPES.has(row.material_code)) {
-          row.material_code = "";
-        }
+        const combined = `${String(row.description||"")} ${String(row.material||"")} ${String(row.notes||"")}`.toUpperCase();
 
-        const desc = (row.description || "").toUpperCase();
-        const mat = (row.material || "").toUpperCase();
-        const notes = (row.notes || "").toUpperCase();
-        const combined = `${desc} ${mat} ${notes}`;
-
-        // 1. Scan for explicit code mentions in description/material/notes
         let found = false;
         for (const code of Object.keys(codeMap)) {
           if (combined.includes(code.toUpperCase())) {
             row.material_code = code;
             if (!row.material) row.material = codeMap[code].name;
-            found = true;
-            break;
+            found = true; break;
           }
         }
         if (found) continue;
 
-        // 2. Also scan for common code patterns not in legend (e.g. PL-01 in desc)
-        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE|PLY)\b/i);
-        if (codeMatch) {
-          row.material_code = codeMatch[1].toUpperCase();
-          found = true;
-          continue;
-        }
+        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE)\b/i);
+        if (codeMatch) { row.material_code = codeMatch[1].toUpperCase(); continue; }
 
-        // 3. Infer by item type from available hints
         const t = row.item_type || "";
         if (/base_cabinet|upper_cabinet|tall_cabinet|cpu_shelf|fixed_shelf|adjustable_shelf|drawer|file_drawer|trash_drawer|safe_cabinet/.test(t)) {
-          if (plCodes.length > 0) { row.material_code = plCodes[0]; row.material = row.material || codeMap[plCodes[0]].name; }
+          if (plCodes.length) { row.material_code = plCodes[0]; row.material = row.material || codeMap[plCodes[0]].name; }
         } else if (/countertop|transaction_top/.test(t)) {
-          if (ssCodes.length > 0) { row.material_code = ssCodes[0]; row.material = row.material || codeMap[ssCodes[0]].name; }
-        } else if (/decorative_panel/.test(t) && /frp|fiberglass/i.test(combined)) {
-          if (wcCodes.length > 0) { row.material_code = wcCodes[0]; row.material = row.material || codeMap[wcCodes[0]].name; }
+          if (ssCodes.length) { row.material_code = ssCodes[0]; row.material = row.material || codeMap[ssCodes[0]].name; }
+        } else if (/decorative_panel/.test(t) && /FRP|FIBERGLASS/i.test(combined)) {
+          if (wcCodes.length) { row.material_code = wcCodes[0]; row.material = row.material || codeMap[wcCodes[0]].name; }
         } else if (/rubber_base/.test(t)) {
-          if (fbCodes.length > 0) { row.material_code = fbCodes[0]; row.material = row.material || codeMap[fbCodes[0]].name; }
+          if (fbCodes.length) { row.material_code = fbCodes[0]; row.material = row.material || codeMap[fbCodes[0]].name; }
         } else if (/substrate/.test(t)) {
           row.material_code = row.material_code || "PLY"; row.material = row.material || "Plywood";
         }
+        } catch (_) { /* skip row */ }
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
+    } catch (e) { console.error("[v14.3.10] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.9", mode: "extract",
+      ok: true, version: "v14.3.10", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -866,7 +857,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.9] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.9", error: err?.message || "Unknown error" });
+    console.error("[v14.3.10] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.10", error: err?.message || "Unknown error" });
   }
 }
