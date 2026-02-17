@@ -161,7 +161,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/Men['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Mens Vanity", 10],
     [/Wom[ea]n['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Womens Vanity", 10],
     [/Vanit(?:y|ies)\s*Detail/i, "Vanity Details", 10],
-    [/Retail\s*(?:Display|Trellis|Area)/i, "Retail Display", 10],
+    [/Retail\s*(?:Display|Trellis|Area|Ceiling)/i, "Retail Trellis", 10],
     [/Break\s*Room/i, "Break Room", 10],
     [/Nurse\s*Station/i, "Nurse Station", 10],
     [/Check[\s-]*(?:In|Out)/i, "Check-In-Out", 10],
@@ -176,8 +176,8 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     // Medium specificity (score 5)
     [/\bLocker/i, "Team Members", 5],
     [/\bVanit(?:y|ies)\b/i, "Vanity Details", 5],
-    [/\bRetail\b/i, "Retail Display", 5],
-    [/\bTrellis\b/i, "Retail Display", 5],
+    [/\bTrellis\b/i, "Retail Trellis", 5],
+    [/\bRetail\b/i, "Retail Trellis", 5],
     [/\bLobby\b/i, "Lobby", 5],
     [/\bKitchen\b/i, "Kitchen", 5],
     [/\bMirror/i, "Vanity Details", 5],
@@ -190,6 +190,9 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
   // Sheet reference patterns — "T3.12" "A7.15" etc. in title block
   const sheetRefRe = /([AT]\d+[.\-]\d+)\s*[-–—:]\s*(.+)/gi;
+
+  // Multi-detail detection: pages with multiple "ENLARGED X PLAN" or "X DETAIL" headings
+  const detailHeadingRe = /ENLARGED\s+([A-Z][A-Z\s']+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION)/gi;
 
   const roomMap = new Map<string, number[]>();
 
@@ -208,7 +211,48 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
       sheetRefs.push(sm[2].trim());
     }
 
-    // Score each room against this page
+    // Detect multi-detail pages: extract all detail headings
+    const detailHeadings: string[] = [];
+    let dm;
+    const detailCheck = new RegExp(detailHeadingRe.source, detailHeadingRe.flags);
+    while ((dm = detailCheck.exec(page.text)) !== null) {
+      detailHeadings.push(dm[1].trim());
+    }
+
+    // For multi-detail pages (3+ detail headings), assign to ALL matching rooms
+    if (detailHeadings.length >= 3) {
+      const matchedRooms = new Set<string>();
+      // Check each detail heading against room patterns
+      for (const heading of detailHeadings) {
+        for (const [pattern, name] of titlePatterns) {
+          if (pattern.test(heading)) {
+            matchedRooms.add(name);
+            break; // first match per heading
+          }
+        }
+      }
+      // Also check sheet references
+      for (const ref of sheetRefs) {
+        for (const [pattern, name] of titlePatterns) {
+          if (pattern.test(ref)) {
+            matchedRooms.add(name);
+            break;
+          }
+        }
+      }
+      // Assign this page to all matched rooms
+      if (matchedRooms.size > 0) {
+        for (const room of matchedRooms) {
+          if (!roomMap.has(room)) roomMap.set(room, []);
+          if (!roomMap.get(room)!.includes(page.pageNum)) {
+            roomMap.get(room)!.push(page.pageNum);
+          }
+        }
+        continue; // skip single-room assignment
+      }
+    }
+
+    // Single-room assignment (original logic): pick best match
     let bestRoom = "Unclassified";
     let bestScore = 0;
 
@@ -252,7 +296,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.13, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.0, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -307,7 +351,7 @@ transaction_top, decorative_panel, trim, channel, rubber_base, substrate, concea
 piano_hinge, grommet, adjustable_shelf, fixed_shelf, cpu_shelf, drawer, file_drawer,
 trash_drawer, rollout_basket, conduit, j_box, equipment_cutout, safe_cabinet,
 controls_cabinet, end_panel, corner_guard, corner_detail, stainless_panel, hanger_support,
-scope_exclusion
+trellis, scope_exclusion
 
 DIMENSION RULES — CRITICAL:
 - Use dimensions from PRE-EXTRACTED HINTS. Match to items by context.
@@ -449,7 +493,7 @@ const VALID_ITEM_TYPES = new Set([
   "cpu_shelf", "drawer", "file_drawer", "trash_drawer", "rollout_basket",
   "conduit", "j_box", "equipment_cutout", "safe_cabinet", "controls_cabinet",
   "end_panel", "corner_guard", "corner_detail", "stainless_panel", "hanger_support",
-  "scope_exclusion",
+  "trellis", "scope_exclusion",
 ]);
 
 function sanitizeToon(toon: string): string {
@@ -607,6 +651,7 @@ function cleanupRows(rows: any[]): any[] {
           else if (/towel.*bar|hook|coat.*rack|accessory/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/mirror/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/grab.*bar|soap.*dispenser|paper.*towel|hand.*dryer/i.test(combined)) row.item_type = "scope_exclusion";
+          else if (/trellis/i.test(combined)) row.item_type = "trellis";
           
           if (desc === row.room || !desc) {
             row.description = itemType;
@@ -688,7 +733,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.13] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.0] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -726,13 +771,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.13] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.0] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.13", mode: "analyze",
+        ok: true, version: "v14.4.0", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -788,10 +833,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.13: ALWAYS override room to the API-provided roomName.
+    // v14.4.0: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.3.13: Postprocess material code assignment from hints (with error safety)
+    // v14.4.0: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -861,10 +906,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.3.13] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.0] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.13", mode: "extract",
+      ok: true, version: "v14.4.0", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -880,7 +925,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.13] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.13", error: err?.message || "Unknown error" });
+    console.error("[v14.4.0] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.0", error: err?.message || "Unknown error" });
   }
 }
