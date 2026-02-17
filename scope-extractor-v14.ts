@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.4.1: Image-page detection + vision extraction for scanned drawings
-// v14.4.1: Multi-detail page splitting, Retail Trellis room+type
+// v14.4.2: Image-page detection + vision extraction for scanned drawings
+// v14.4.2: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -304,7 +304,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.1, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.2, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -479,12 +479,46 @@ function buildUserPrompt(
   const isImageBased = textChars < 100;
 
   if (isImageBased) {
-    parts.push("## IMPORTANT: IMAGE-BASED DRAWING");
-    parts.push("The OCR text below is EMPTY or near-empty because this is a scanned drawing.");
-    parts.push("Use the ATTACHED IMAGE(S) above to read the drawing visually.");
-    parts.push("Extract all millwork items you can identify from the drawing image.");
-    parts.push("Look for: dimension strings, callout labels, material codes, equipment tags,");
-    parts.push("cabinet sections, countertops, shelves, drawers, and hardware references.");
+    parts.push("## VISION EXTRACTION MODE — IMAGE-BASED DRAWING");
+    parts.push("The OCR text is EMPTY because this page is a scanned architectural drawing.");
+    parts.push("You MUST read the ATTACHED IMAGE(S) above to extract millwork items.");
+    parts.push("");
+    parts.push("HOW TO READ THE DRAWING IMAGE:");
+    parts.push("1. TITLE BLOCK: Look in bottom-right corner for sheet number, room name, project info");
+    parts.push("2. PLAN VIEW: The largest drawing — shows layout from above with dimension strings");
+    parts.push("3. ELEVATION/SECTION VIEWS: Side views labeled with detail numbers (e.g. 5/A8.06)");
+    parts.push("   These show cabinets, shelves, countertops with HEIGHT dimensions");
+    parts.push("4. DETAIL VIEWS: Enlarged views of specific components with precise dimensions");
+    parts.push("");
+    parts.push("WHAT TO LOOK FOR IN THE IMAGE:");
+    parts.push("- DIMENSION STRINGS: Lines with arrows/ticks showing measurements like 5'-0\", 2'-6\", 34\"");
+    parts.push("  These appear as horizontal/vertical lines between tick marks with numbers");
+    parts.push("- CABINET SECTIONS: Rectangles in plan view, labeled with section IDs or numbers");
+    parts.push("- COUNTERTOPS: Shown as thicker lines on top of cabinets, often with material callouts");
+    parts.push("- UPPER CABINETS: Shown with dashed lines in plan view (above the countertop)");
+    parts.push("- SHELVES/DRAWERS: Visible in elevation views as horizontal lines inside cabinet rectangles");
+    parts.push("- EQUIPMENT TAGS: Labels like FURN-31, SINK-4, WM-1, DR-1 indicating equipment");
+    parts.push("- MATERIAL CALLOUTS: Tags like PL-01, SS-1B, WC-4A near items or in notes");
+    parts.push("- 'BY OTHERS' / 'NIC' / 'NOT IN CONTRACT' text → scope_exclusion");
+    parts.push("- HARDWARE: Lock types (LOCK-4), hinge callouts, pulls — extract as separate items");
+    parts.push("");
+    parts.push("CRITICAL FOR SERVICE MANAGER / OFFICE ROOMS:");
+    parts.push("- Look for: tall stereo/AV cabinets, upper wall cabinets, base cabinets");
+    parts.push("- Wall-hung shelves (often 3 stacked), backboard behind shelves");
+    parts.push("- File drawers (labeled 'FILE' or 'F.D.'), regular drawers");
+    parts.push("- Laminate countertop running along base cabinets");
+    parts.push("- Locks on cabinet doors (count from elevation views)");
+    parts.push("- Overall run lengths shown in plan view as dimension strings");
+    parts.push("");
+    parts.push("DIMENSION EXTRACTION FROM IMAGES:");
+    parts.push("- Read dimension strings carefully: 5'-0\" = 1524mm, 2'-0\" = 610mm, 7'-0\" = 2134mm");
+    parts.push("- Plan view dimensions (horizontal) are usually WIDTH of cabinet runs");
+    parts.push("- Elevation view dimensions (vertical) are HEIGHT of cabinets");
+    parts.push("- Depth is typically 24\" (610mm) for base cabinets, 12\" (305mm) for uppers");
+    parts.push("- Extract EVERY dimension you can read from the image");
+    parts.push("");
+    parts.push("Extract ALL millwork items visible. Be thorough — count every cabinet,");
+    parts.push("every shelf, every drawer, every countertop section you can identify.");
     parts.push("");
   }
 
@@ -760,7 +794,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
           });
           content.push({
             type: "text",
-            text: `[Above: PAGE ${img.pageNum} — scanned drawing image]`,
+            text: `[Above: PAGE ${img.pageNum} — scanned architectural/millwork shop drawing. Read ALL dimension strings, cabinet sections, countertops, shelves, drawers, material callouts, and equipment tags visible in this drawing.]`,
           });
         }
       }
@@ -779,7 +813,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.1] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.2] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -817,13 +851,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.2] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.1", mode: "analyze",
+        ok: true, version: "v14.4.2", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -854,7 +888,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
 
-    // v14.4.1: Build image list for vision extraction (image-only pages)
+    // v14.4.2: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -864,7 +898,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.4.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.4.2] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -892,10 +926,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.1: ALWAYS override room to the API-provided roomName.
+    // v14.4.2: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.4.1: Postprocess material code assignment from hints (with error safety)
+    // v14.4.2: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -965,10 +999,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.1] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.2] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.1", mode: "extract",
+      ok: true, version: "v14.4.2", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -984,7 +1018,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.1] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.1", error: err?.message || "Unknown error" });
+    console.error("[v14.4.2] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.2", error: err?.message || "Unknown error" });
   }
 }

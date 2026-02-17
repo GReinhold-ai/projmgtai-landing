@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.4.1 — Client-driven room-by-room extraction
+// ProjMgtAI v14.4.2 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -49,11 +49,11 @@ export default function HomePage() {
       if (text.length < 50) {
         try {
           setProgress(`Page ${i}: image-only — rendering for vision...`);
-          const scale = 2.0; // 2x for readable resolution
+          const scale = 3.0; // 3x for readable dimension strings
           const viewport = page.getViewport({ scale });
-          // Cap at 2000px to keep base64 size reasonable
+          // Cap at 3000px to keep base64 size reasonable for API
           const maxDim = Math.max(viewport.width, viewport.height);
-          const finalScale = maxDim > 2000 ? scale * (2000 / maxDim) : scale;
+          const finalScale = maxDim > 3000 ? scale * (3000 / maxDim) : scale;
           const finalViewport = page.getViewport({ scale: finalScale });
           
           const canvas = document.createElement("canvas");
@@ -61,8 +61,8 @@ export default function HomePage() {
           canvas.height = finalViewport.height;
           const ctx2d = canvas.getContext("2d")!;
           await page.render({ canvasContext: ctx2d, viewport: finalViewport }).promise;
-          // Convert to JPEG at 80% quality to keep size down
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.80);
+          // Convert to JPEG at 90% quality for readable dimension strings
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.90);
           const base64 = dataUrl.split(",")[1];
           imagePages[i] = base64;
           canvas.remove();
@@ -320,7 +320,7 @@ export default function HomePage() {
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.1"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.2"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -474,13 +474,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.1 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.2 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.4.1 — Improved room detection & dimension extraction
+          ★ v14.4.2 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -532,7 +532,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1441_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1442_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
