@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.3.11 — Client-driven room-by-room extraction
+// ProjMgtAI v14.3.12 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -195,6 +195,11 @@ export default function HomePage() {
         const children = ri.filter((r: any) => r.item_type !== "assembly" && r.item_type !== "scope_exclusion");
         if (!assemblies.length) continue;
 
+        // Mark duplicate assemblies for removal (keep only first)
+        for (let ai = 1; ai < assemblies.length; ai++) {
+          assemblies[ai]._duplicate = true;
+        }
+
         // Compute overall dims: max width sum (total LF), max depth, max height
         let totalLF = 0; let maxW = 0; let maxD = 0; let maxH = 0;
         const typeCounts: Record<string, number> = {};
@@ -271,10 +276,12 @@ export default function HomePage() {
       }
     };
     enrichAssemblies(rows);
+    // Remove duplicate assembly rows
+    rows = rows.filter((r: any) => !r._duplicate);
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.11"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.3.12"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -428,13 +435,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.11 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.3.12 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.3.11 — Improved room detection & dimension extraction
+          ★ v14.3.12 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -486,7 +493,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v14311_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v14312_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>

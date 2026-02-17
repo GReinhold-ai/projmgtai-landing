@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.11, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.12, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -627,6 +627,25 @@ function cleanupRows(rows: any[]): any[] {
       }
     }
     
+    // Clean material_code: description or confidence value leaked into wrong column
+    if (row.material_code && typeof row.material_code === "string") {
+      const mc = row.material_code.trim();
+      // If mat_code is a confidence value, swap
+      if (/^(high|medium|low)$/i.test(mc)) {
+        if (!row.confidence) row.confidence = mc;
+        row.material_code = "";
+      }
+      // If mat_code is very long (description leaked in), clear it
+      else if (mc.length > 25) {
+        row.material_code = "";
+      }
+    }
+    // Clean material field: confidence value leaked in
+    if (row.material && typeof row.material === "string" && /^(high|medium|low)$/i.test(row.material.trim())) {
+      if (!row.confidence) row.confidence = row.material.trim();
+      row.material = "";
+    }
+    
     // Clean description of any remaining semicolons or commas with TOON patterns
     if (row.description) {
       row.description = row.description
@@ -666,7 +685,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.11] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.12] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -704,13 +723,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.11] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.12] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.11", mode: "analyze",
+        ok: true, version: "v14.3.12", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -766,10 +785,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.11: ALWAYS override room to the API-provided roomName.
+    // v14.3.12: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.3.11: Postprocess material code assignment from hints (with error safety)
+    // v14.3.12: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -789,9 +808,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       for (const row of rows) {
         try {
         if (!row || row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
-        const matCode = String(row.material_code || "");
-        if (matCode && !VALID_ITEM_TYPES.has(matCode)) continue;
-        if (matCode && VALID_ITEM_TYPES.has(matCode)) row.material_code = "";
+        const matCode = String(row.material_code || "").trim();
+        // Skip if already has a real-looking material code (short code like PL-01, SS-1B, etc.)
+        const looksLikeCode = matCode.length > 0 && matCode.length <= 15 && /^[A-Z0-9][-A-Z0-9_]*$/i.test(matCode) && !VALID_ITEM_TYPES.has(matCode);
+        if (looksLikeCode) continue;
+        // Clear garbage in material_code (item_type names, long descriptions, etc.)
+        if (matCode && !looksLikeCode) row.material_code = "";
 
         const combined = `${String(row.description||"")} ${String(row.material||"")} ${String(row.notes||"")}`.toUpperCase();
 
@@ -824,10 +846,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.3.11] material assign error:", e); }
+    } catch (e) { console.error("[v14.3.12] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.11", mode: "extract",
+      ok: true, version: "v14.3.12", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -843,7 +865,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.11] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.11", error: err?.message || "Unknown error" });
+    console.error("[v14.3.12] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.12", error: err?.message || "Unknown error" });
   }
 }
