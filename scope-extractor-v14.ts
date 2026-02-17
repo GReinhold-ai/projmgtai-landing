@@ -1,6 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
-// V14.3.1 Scope Extractor — Client-Driven Multi-Room Pipeline
+// V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
+// v14.4.1: Image-page detection + vision extraction for scanned drawings
+// v14.4.1: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -8,6 +10,13 @@
 //   - Infer item_type from description keywords when LLM outputs non-standard type
 //
 // v14.3 FIXES:
+
+import type { NextApiRequest, NextApiResponse } from "next";
+
+// Increase body size limit for base64 page images
+export const config = {
+  api: { bodyParser: { sizeLimit: "20mb" } },
+};
 //   - Room grouping: title-block-aware detection (first/last 600 chars + sheet number patterns)
 //   - Room grouping: specificity scoring — "Kids Club" beats "Reception" on same page
 //   - TOON sanitization: strip semicolons from description field to prevent column bleed
@@ -19,7 +28,6 @@
 //   Call 1: mode="analyze" → returns page groupings + project context
 //   Call 2+: mode="extract" → extracts one room at a time
 
-import type { NextApiRequest, NextApiResponse } from "next";
 import Anthropic from "@anthropic-ai/sdk";
 import { decodeToon, isValidToon } from "@/lib/toon";
 import { MW_ITEM_SCHEMA_V14 } from "@/lib/toonSchemas";
@@ -296,7 +304,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.0, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.1, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -464,6 +472,20 @@ function buildUserPrompt(
   let ocrText = roomText;
   if (ocrText.length > 15000) {
     ocrText = ocrText.substring(0, 15000) + "\n[TRUNCATED]";
+  }
+
+  // Check if OCR text is mostly empty (image-only pages)
+  const textChars = ocrText.replace(/---\s*PAGE\s*\d+\s*---/g, "").replace(/\s/g, "").length;
+  const isImageBased = textChars < 100;
+
+  if (isImageBased) {
+    parts.push("## IMPORTANT: IMAGE-BASED DRAWING");
+    parts.push("The OCR text below is EMPTY or near-empty because this is a scanned drawing.");
+    parts.push("Use the ATTACHED IMAGE(S) above to read the drawing visually.");
+    parts.push("Extract all millwork items you can identify from the drawing image.");
+    parts.push("Look for: dimension strings, callout labels, material codes, equipment tags,");
+    parts.push("cabinet sections, countertops, shelves, drawers, and hardware references.");
+    parts.push("");
   }
 
   parts.push("## OCR TEXT");
@@ -719,13 +741,37 @@ function cleanupRows(rows: any[]): any[] {
 
 // ─── LLM Call with Retry ─────────────────────────────────────
 
-async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<string> {
+async function callAnthropic(systemPrompt: string, userPrompt: string, images?: { pageNum: number; base64: string }[]): Promise<string> {
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
+      // Build content blocks: text + optional images
+      const content: any[] = [];
+      
+      // If we have images, add them first so the LLM sees the drawings
+      if (images && images.length > 0) {
+        for (const img of images) {
+          content.push({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: img.base64,
+            },
+          });
+          content.push({
+            type: "text",
+            text: `[Above: PAGE ${img.pageNum} — scanned drawing image]`,
+          });
+        }
+      }
+      
+      // Add the main text prompt
+      content.push({ type: "text", text: userPrompt });
+      
       const message = await anthropic.messages.create({
         model: MODEL, max_tokens: 8192, temperature: 0.05,
         system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
+        messages: [{ role: "user", content }],
       });
       const tb = message.content.find((b: any) => b.type === "text");
       return tb?.text?.trim() ?? "";
@@ -733,7 +779,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.0] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.1] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -751,7 +797,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).end("Method Not Allowed");
   }
 
-  const { text, projectId, sheetRef, mode, roomPages, projectContext: clientCtx } = req.body || {};
+  const { text, projectId, sheetRef, mode, roomPages, projectContext: clientCtx, pageImages } = req.body || {};
 
   if (!text || typeof text !== "string") {
     return res.status(400).json({ error: "Missing text" });
@@ -771,13 +817,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.0] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.0", mode: "analyze",
+        ok: true, version: "v14.4.1", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -808,8 +854,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
 
+    // v14.4.1: Build image list for vision extraction (image-only pages)
+    const images: { pageNum: number; base64: string }[] = [];
+    if (pageImages && typeof pageImages === "object") {
+      for (const [pn, b64] of Object.entries(pageImages)) {
+        if (typeof b64 === "string" && b64.length > 100) {
+          images.push({ pageNum: parseInt(pn), base64: b64 as string });
+        }
+      }
+    }
+    if (images.length > 0) {
+      console.log(`[v14.4.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
+    }
+
     const tLlm = Date.now();
-    let toon = await callAnthropic(systemPrompt, userPrompt);
+    let toon = await callAnthropic(systemPrompt, userPrompt, images.length > 0 ? images : undefined);
     const llmMs = Date.now() - tLlm;
 
     // v14.3: Sanitize TOON before validation
@@ -833,10 +892,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.0: ALWAYS override room to the API-provided roomName.
+    // v14.4.1: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.4.0: Postprocess material code assignment from hints (with error safety)
+    // v14.4.1: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -906,10 +965,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.0] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.0", mode: "extract",
+      ok: true, version: "v14.4.1", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -925,7 +984,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.0] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.0", error: err?.message || "Unknown error" });
+    console.error("[v14.4.1] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.1", error: err?.message || "Unknown error" });
   }
 }

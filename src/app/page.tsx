@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.4.0 — Client-driven room-by-room extraction
+// ProjMgtAI v14.4.1 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -32,17 +32,46 @@ export default function HomePage() {
     if (f) { setFile(f); setError(""); }
   };
 
-  async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number }> {
+  async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
     const buf = await pdfFile.arrayBuffer();
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
+    const imagePages: Record<number, string> = {}; // pageNum -> base64 PNG
+    
     for (let i = 1; i <= pdf.numPages; i++) {
       setProgress(`Reading page ${i} of ${pdf.numPages}...`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      pages.push(`--- PAGE ${i} ---\n${content.items.map((it: any) => it.str).join(" ")}`);
+      const text = content.items.map((it: any) => it.str).join(" ").trim();
+      pages.push(`--- PAGE ${i} ---\n${text}`);
+      
+      // Detect image-only pages: <50 chars of extractable text
+      if (text.length < 50) {
+        try {
+          setProgress(`Page ${i}: image-only — rendering for vision...`);
+          const scale = 2.0; // 2x for readable resolution
+          const viewport = page.getViewport({ scale });
+          // Cap at 2000px to keep base64 size reasonable
+          const maxDim = Math.max(viewport.width, viewport.height);
+          const finalScale = maxDim > 2000 ? scale * (2000 / maxDim) : scale;
+          const finalViewport = page.getViewport({ scale: finalScale });
+          
+          const canvas = document.createElement("canvas");
+          canvas.width = finalViewport.width;
+          canvas.height = finalViewport.height;
+          const ctx2d = canvas.getContext("2d")!;
+          await page.render({ canvasContext: ctx2d, viewport: finalViewport }).promise;
+          // Convert to JPEG at 80% quality to keep size down
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.80);
+          const base64 = dataUrl.split(",")[1];
+          imagePages[i] = base64;
+          canvas.remove();
+        } catch (renderErr) {
+          console.warn(`Failed to render page ${i}:`, renderErr);
+        }
+      }
     }
-    return { text: pages.join("\n\n"), pageCount: pdf.numPages };
+    return { text: pages.join("\n\n"), pageCount: pdf.numPages, imagePages };
   }
 
   const handleExtract = async () => {
@@ -51,8 +80,13 @@ export default function HomePage() {
     setResultUrl(null); setStats(null);
 
     try {
-      // Step 1: Extract PDF text
-      const { text: pdfText, pageCount } = await extractTextFromPdf(file);
+      // Step 1: Extract PDF text + detect image pages
+      const { text: pdfText, pageCount, imagePages } = await extractTextFromPdf(file);
+      const imagePageNums = Object.keys(imagePages).map(Number);
+      if (imagePageNums.length > 0) {
+        setProgress(`Found ${imagePageNums.length} image-only page(s): ${imagePageNums.join(", ")} — will use vision`);
+        await new Promise(r => setTimeout(r, 1000)); // brief pause so user sees the message
+      }
       if (!pdfText || pdfText.trim().length < 10)
         throw new Error("Could not extract text. This may be a scanned PDF.");
 
@@ -98,6 +132,11 @@ export default function HomePage() {
               roomName: room.roomName,
               roomPages: room.pageNums,
               projectContext: projectContext,
+              // Include base64 images for any image-only pages in this room
+              pageImages: room.pageNums.reduce((acc: Record<number, string>, pn: number) => {
+                if (imagePages[pn]) acc[pn] = imagePages[pn];
+                return acc;
+              }, {}),
             }),
           });
 
@@ -281,7 +320,7 @@ export default function HomePage() {
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.0"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.1"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -435,13 +474,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.0 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.1 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.4.0 — Improved room detection & dimension extraction
+          ★ v14.4.1 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -493,7 +532,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1440_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1441_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
