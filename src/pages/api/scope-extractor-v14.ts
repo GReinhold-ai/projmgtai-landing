@@ -252,7 +252,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.3.12, an expert architectural millwork estimator
+You are ScopeExtractor v14.3.13, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -604,6 +604,9 @@ function cleanupRows(rows: any[]): any[] {
           else if (/substrate|plywood/i.test(combined)) row.item_type = "substrate";
           else if (/counter/i.test(combined)) row.item_type = "countertop";
           else if (/locker|cabinet/i.test(combined)) row.item_type = "base_cabinet";
+          else if (/towel.*bar|hook|coat.*rack|accessory/i.test(combined)) row.item_type = "scope_exclusion";
+          else if (/mirror/i.test(combined)) row.item_type = "scope_exclusion";
+          else if (/grab.*bar|soap.*dispenser|paper.*towel|hand.*dryer/i.test(combined)) row.item_type = "scope_exclusion";
           
           if (desc === row.room || !desc) {
             row.description = itemType;
@@ -685,7 +688,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string): Promise<
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.3.12] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.3.13] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -723,13 +726,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.3.12] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.3.13] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.3.12", mode: "analyze",
+        ok: true, version: "v14.3.13", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -785,10 +788,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.3.12: ALWAYS override room to the API-provided roomName.
+    // v14.3.13: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.3.12: Postprocess material code assignment from hints (with error safety)
+    // v14.3.13: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -808,12 +811,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       for (const row of rows) {
         try {
         if (!row || row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
-        const matCode = String(row.material_code || "").trim();
-        // Skip if already has a real-looking material code (short code like PL-01, SS-1B, etc.)
-        const looksLikeCode = matCode.length > 0 && matCode.length <= 15 && /^[A-Z0-9][-A-Z0-9_]*$/i.test(matCode) && !VALID_ITEM_TYPES.has(matCode);
+        
+        // Pre-scan: if material field has a code pattern and material_code doesn't, swap
+        const matField = String(row.material || "").trim();
+        const mcField = String(row.material_code || "").trim();
+        const matFieldCode = matField.match(/^(PL-\d+[A-Z]?|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM)$/i);
+        if (matFieldCode && (!mcField || mcField.length <= 3)) {
+          // Material field has the code, material_code has junk or a bare prefix
+          row.material_code = matFieldCode[1].toUpperCase();
+          row.material = mcField || ""; // swap the bare prefix to material or clear
+          continue;
+        }
+        
+        const matCode = mcField;
+        // Skip if already has a real-looking material code (4+ chars, pattern match)
+        const looksLikeCode = matCode.length >= 3 && matCode.length <= 15 && /^[A-Z0-9][-A-Z0-9_]*$/i.test(matCode) && !VALID_ITEM_TYPES.has(matCode);
         if (looksLikeCode) continue;
-        // Clear garbage in material_code (item_type names, long descriptions, etc.)
-        if (matCode && !looksLikeCode) row.material_code = "";
+        // Clear garbage in material_code (item_type names, long descriptions, bare prefixes like "SS")
+        if (matCode) row.material_code = "";
 
         const combined = `${String(row.description||"")} ${String(row.material||"")} ${String(row.notes||"")}`.toUpperCase();
 
@@ -846,10 +861,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.3.12] material assign error:", e); }
+    } catch (e) { console.error("[v14.3.13] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.3.12", mode: "extract",
+      ok: true, version: "v14.3.13", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -865,7 +880,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.3.12] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.3.12", error: err?.message || "Unknown error" });
+    console.error("[v14.3.13] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.3.13", error: err?.message || "Unknown error" });
   }
 }
