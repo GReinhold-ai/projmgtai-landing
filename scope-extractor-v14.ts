@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.4.4: Image-page detection + vision extraction for scanned drawings
-// v14.4.4: Multi-detail page splitting, Retail Trellis room+type
+// v14.4.5: Image-page detection + vision extraction for scanned drawings
+// v14.4.5: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -304,7 +304,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.4, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.5, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -332,12 +332,12 @@ NEVER put the room name as item_type. NEVER repeat the room name across multiple
 
 EXAMPLE OUTPUT (for a room called "Reception Desk"):
   assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;A8.10;high;
-  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;A8.10;high;
-  countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;;high;
-  transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;;high;
-  decorative_panel;Reception Desk;2;3Form Panel Front;;EA;;;;unknown;3FORM;3Form Chroma Vapor;;medium;
-  rubber_base;Reception Desk;1;Black Rubber Base;;LF;;;;unknown;FB-01;Rubber Base;;medium;
-  scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;low;
+  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;;A8.10;high;
+  countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;;5/A8.06;high;
+  transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;;A8.10, 7/A8.06;high;
+  decorative_panel;Reception Desk;2;3Form Panel Front;;EA;;;;unknown;3FORM;3Form Chroma Vapor;;A8.10;medium;
+  rubber_base;Reception Desk;1;Black Rubber Base;;LF;;;;unknown;FB-01;Rubber Base;;;medium;
+  scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;;low;
 
 SCOPE_EXCLUSION vs MILLWORK — CRITICAL:
 - scope_exclusion is ONLY for items NOT built/installed by the millwork contractor
@@ -395,7 +395,17 @@ MATERIAL RULES:
 - material_code: code from hints/legend (PL-01, SS-1B, WC-4A, FB-1, etc.)
 - material: full text description (Plastic Laminate, Solid Surface, etc.)
 - Apply material codes from PRE-EXTRACTED MATERIALS to matching items.
-- If same material applies to all cabinet sections (e.g. PL-01), apply to every section.`.trim();
+- If same material applies to all cabinet sections (e.g. PL-01), apply to every section.
+
+SHEET_REF / DETAIL PAGE — CRITICAL:
+- sheet_ref: the drawing sheet number and/or detail number where this item is shown
+- Look for references like "A8.10", "5/A8.06", "D1/A-403", "A2.41", "A7.15"
+- These appear as title block references, detail callout bubbles, or sheet index entries
+- Format: use the notation from the drawing (e.g. "A8.10", "5/A8.06", "D1/A-403")
+- If multiple details show the item, list them comma-separated: "A8.10, 5/A8.06"
+- NEVER put confidence values (high/medium/low) in the sheet_ref field
+- NEVER put dimensions in the sheet_ref field
+- Leave empty if no sheet reference is identifiable`.trim();
 
   if (ctx.documentType === "shop_drawing" || ctx.materialLegend.length > 0) {
     p += `
@@ -730,6 +740,17 @@ function cleanupRows(rows: any[]): any[] {
       row.material = "";
     }
     
+    // Clean sheet_ref: confidence or dimension values leaked in
+    if (row.sheet_ref && typeof row.sheet_ref === "string") {
+      const sr = row.sheet_ref.trim();
+      if (/^(high|medium|low)$/i.test(sr)) {
+        if (!row.confidence) row.confidence = sr;
+        row.sheet_ref = "";
+      } else if (/^\d+['-]/.test(sr) || /^\d+mm$/i.test(sr) || /^\d+$/.test(sr)) {
+        row.sheet_ref = "";
+      }
+    }
+    
     // Clean description of any remaining semicolons or commas with TOON patterns
     if (row.description) {
       row.description = row.description
@@ -793,7 +814,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.4] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.5] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -831,13 +852,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.4] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.5] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.4", mode: "analyze",
+        ok: true, version: "v14.4.5", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -868,7 +889,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
 
-    // v14.4.4: Build image list for vision extraction (image-only pages)
+    // v14.4.5: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -878,7 +899,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.4.4] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.4.5] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -906,10 +927,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.4: ALWAYS override room to the API-provided roomName.
+    // v14.4.5: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.4.4: Reclassify scope_exclusions that are actually millwork
+    // v14.4.5: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -933,7 +954,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.4.4: Postprocess material code assignment from hints (with error safety)
+    // v14.4.5: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1003,10 +1024,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.4] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.5] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.4", mode: "extract",
+      ok: true, version: "v14.4.5", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1022,7 +1043,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.4] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.4", error: err?.message || "Unknown error" });
+    console.error("[v14.4.5] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.5", error: err?.message || "Unknown error" });
   }
 }
