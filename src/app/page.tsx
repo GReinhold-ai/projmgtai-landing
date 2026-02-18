@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.4.6 — Client-driven room-by-room extraction
+// ProjMgtAI v14.4.7 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -164,6 +164,7 @@ export default function HomePage() {
               room: room.roomName, status: "ok",
               itemCount: result.rows?.length || 0,
               pages: room.pageNums,
+              sheetInfo: result.sheetInfo || null,
               timing: result.timing,
             });
           } else {
@@ -321,7 +322,7 @@ export default function HomePage() {
     // Tab 1: Project Summary — with project info header
     const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.6"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.7"], [],
     ];
     // Project info block (like Coto De Casa proposal header)
     if (pi.projectName) sum.push(["Project:", pi.projectName]);
@@ -348,9 +349,16 @@ export default function HomePage() {
       sum.push([]);
     }
     sum.push(["ROOM RESULTS"]);
-    sum.push(["Room", "Status", "Items", "Pages"]);
-    for (const r of roomResults)
-      sum.push([r.room, r.status, r.itemCount || 0, (r.pages || []).join(", ")]);
+    sum.push(["Room", "Status", "Items", "Pages", "Sheet", "Details"]);
+    for (const r of roomResults) {
+      const si = (r as any).sheetInfo;
+      sum.push([
+        r.room, r.status, r.itemCount || 0,
+        (r.pages || []).join(", "),
+        si?.sheetNumber || "",
+        si?.detailNumbers?.join(", ") || "",
+      ]);
+    }
 
     const ws1 = XLSX.utils.aoa_to_sheet(sum);
     ws1["!cols"] = [{ wch: 25 }, { wch: 20 }, { wch: 25 }, { wch: 20 }, { wch: 15 }];
@@ -522,13 +530,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.6 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.7 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.4.6 — Improved room detection & dimension extraction
+          ★ v14.4.7 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -580,7 +588,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1446_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1447_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>

@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.4.6: Image-page detection + vision extraction for scanned drawings
-// v14.4.6: Multi-detail page splitting, Retail Trellis room+type
+// v14.4.7: Image-page detection + vision extraction for scanned drawings
+// v14.4.7: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -345,7 +345,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.6, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.7, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -471,16 +471,99 @@ matching the column count. Description field must NEVER contain semicolons.`;
   return p;
 }
 
+// ─── Sheet & Detail Reference Extraction ────────────────────
+
+interface SheetDetailInfo {
+  sheetNumber: string;       // e.g. "A8.10"
+  detailNumbers: string[];   // e.g. ["1", "2", "3", "4A", "4B", ...]
+  fullRefs: string[];        // e.g. ["1/A8.10", "4A/A8.10", ...]
+}
+
+function extractSheetDetails(pageText: string): SheetDetailInfo {
+  const info: SheetDetailInfo = { sheetNumber: "", detailNumbers: [], fullRefs: [] };
+  const detailSet = new Set<string>();
+  
+  // Extract sheet number from title block patterns:
+  // "A8.10\nCASEWORK" or standalone "A8.10" in title block area
+  // The sheet number typically appears near SHEET TITLE or as a standalone reference
+  const sheetPatterns = [
+    /\b(A\d+\.\d+)\s*\n\s*(?:CASEWORK|FINISH|INTERIOR|ENLARGED|LOCKER|TEAM|SERVICE|RECEPTION|DETAILS)/i,
+    /SHEET\s*(?:NO\.?)?\s*:?\s*(A\d+\.\d+)/i,
+    /^\s*(A\d+\.\d+)\s*$/m,
+  ];
+  
+  // Count occurrences of each sheet number to find the most common (= the page's sheet)
+  const sheetCounts: Record<string, number> = {};
+  const allSheetRefs = pageText.match(/\b(A\d+\.\d+)\b/g) || [];
+  for (const s of allSheetRefs) {
+    sheetCounts[s] = (sheetCounts[s] || 0) + 1;
+  }
+  // Most frequent sheet number is likely the page's own sheet
+  let bestSheet = ""; let bestCount = 0;
+  for (const [s, c] of Object.entries(sheetCounts)) {
+    if (c > bestCount) { bestSheet = s; bestCount = c; }
+  }
+  if (bestSheet && bestCount >= 3) {
+    info.sheetNumber = bestSheet;
+  } else {
+    // Try explicit patterns
+    for (const pat of sheetPatterns) {
+      const m = pageText.match(pat);
+      if (m) { info.sheetNumber = m[1]; break; }
+    }
+  }
+  
+  if (!info.sheetNumber) return info;
+  
+  const sheet = info.sheetNumber.replace(".", "\\.");
+  
+  // Pattern 1: "N / A8.10" (slash reference)
+  const p1 = new RegExp(`(\\d+[A-D]?)\\s*/\\s*${sheet}`, "g");
+  let m;
+  while ((m = p1.exec(pageText)) !== null) detailSet.add(m[1]);
+  
+  // Pattern 2: "N\nA8.10" (detail number on line before sheet)
+  const p2 = new RegExp(`(\\d+[A-D]?)\\s*\\n\\s*${sheet}`, "g");
+  while ((m = p2.exec(pageText)) !== null) detailSet.add(m[1]);
+  
+  // Pattern 3: "A8.10\nN ROOM NAME" (title block detail index)
+  const p3 = new RegExp(`${sheet}\\s+[\\d/"= \\'-]+\\n(\\d+[A-D]?)\\s+[A-Z]`, "g");
+  while ((m = p3.exec(pageText)) !== null) detailSet.add(m[1]);
+  
+  // Pattern 4: "A8.10\nNA" (sheet then detail with letter suffix)
+  const p4 = new RegExp(`${sheet}\\s*\\n\\s*(\\d+[A-D])\\b`, "g");
+  while ((m = p4.exec(pageText)) !== null) detailSet.add(m[1]);
+
+  info.detailNumbers = [...detailSet].sort((a, b) => {
+    const na = parseInt(a.replace(/[A-D]/g, "")); const nb = parseInt(b.replace(/[A-D]/g, ""));
+    return na - nb || a.localeCompare(b);
+  });
+  info.fullRefs = info.detailNumbers.map(d => `${d}/${info.sheetNumber}`);
+  
+  return info;
+}
+
 // ─── User Prompt Builder ─────────────────────────────────────
 
 function buildUserPrompt(
-  roomText: string, roomName: string, hints: any, ctx: ProjectContext, projectId?: string
+  roomText: string, roomName: string, hints: any, ctx: ProjectContext, projectId?: string, sheetInfo?: SheetDetailInfo
 ): string {
   const parts: string[] = [];
   parts.push(`Project: ${projectId || "(unspecified)"}`);
   parts.push(`Room: ${roomName}`);
   parts.push(`Document Type: ${ctx.documentType}`);
   parts.push("");
+
+  // Sheet & detail references
+  if (sheetInfo?.sheetNumber) {
+    parts.push(`## SHEET & DETAIL REFERENCES`);
+    parts.push(`Sheet: ${sheetInfo.sheetNumber}`);
+    if (sheetInfo.detailNumbers.length > 0) {
+      parts.push(`Details found: ${sheetInfo.detailNumbers.join(", ")}`);
+      parts.push(`Use these for sheet_ref field: e.g. "${sheetInfo.detailNumbers[0]}/${sheetInfo.sheetNumber}"`);
+    }
+    parts.push("");
+  }
 
   if (ctx.materialLegend.length > 0) {
     parts.push("## PROJECT MATERIAL LEGEND");
@@ -855,7 +938,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.6] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.7] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -893,13 +976,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.6] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.7] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.6", mode: "analyze",
+        ok: true, version: "v14.4.7", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -924,13 +1007,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
+    // v14.4.7: Extract sheet number & detail references from OCR text
+    const sheetInfo = extractSheetDetails(combinedText);
+    if (sheetInfo.sheetNumber) {
+      console.log(`[v14.4.7] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+    }
+
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
     const hints = preprocess(combinedText, sheetRef);
 
     const systemPrompt = buildSystemPrompt(ctx);
-    const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
+    const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.4.6: Build image list for vision extraction (image-only pages)
+    // v14.4.7: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -940,7 +1029,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.4.6] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.4.7] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -968,10 +1057,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.6: ALWAYS override room to the API-provided roomName.
+    // v14.4.7: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
+    
+    // v14.4.7: Auto-assign sheet_ref from extracted sheet/detail info
+    if (sheetInfo.sheetNumber) {
+      const detailList = sheetInfo.detailNumbers.join(", ");
+      for (const row of cleanedRows) {
+        if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
+          // Try to match detail number from section_id
+          const secId = (row.section_id || "").replace(/^[A-Z]+-/, "");
+          const matchedDetail = sheetInfo.detailNumbers.find(d => d === secId);
+          if (matchedDetail) {
+            row.sheet_ref = `${matchedDetail}/${sheetInfo.sheetNumber}`;
+          } else {
+            // Assign sheet + all details as reference
+            row.sheet_ref = sheetInfo.sheetNumber;
+          }
+        }
+      }
+    }
 
-    // v14.4.6: Reclassify scope_exclusions that are actually millwork
+    // v14.4.7: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -995,7 +1102,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.4.6: Postprocess material code assignment from hints (with error safety)
+    // v14.4.7: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1065,15 +1172,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.6] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.7] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.6", mode: "extract",
+      ok: true, version: "v14.4.7", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
       stats: { ...result.stats, totalItems: cleanedRows.length },
       warnings: result.warnings,
+      sheetInfo: sheetInfo.sheetNumber ? sheetInfo : null,
       hints: {
         dimensionCount: hints.dimensions.length,
         materialCount: hints.materials.length,
@@ -1084,7 +1192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.6] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.6", error: err?.message || "Unknown error" });
+    console.error("[v14.4.7] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.7", error: err?.message || "Unknown error" });
   }
 }
