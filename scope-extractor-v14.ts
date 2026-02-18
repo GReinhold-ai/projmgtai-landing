@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.4.5: Image-page detection + vision extraction for scanned drawings
-// v14.4.5: Multi-detail page splitting, Retail Trellis room+type
+// v14.4.6: Image-page detection + vision extraction for scanned drawings
+// v14.4.6: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -52,6 +52,14 @@ interface ProjectContext {
   hardwareGroups: Record<string, string[]>;
   generalNotes: string[];
   documentType: "bid_set" | "shop_drawing" | "submittal" | "unknown";
+  projectInfo: {
+    projectName: string;
+    client: string;
+    address: string;
+    architect: string;
+    planSet: string;
+    planDate: string;
+  };
 }
 
 interface RoomInfo {
@@ -83,7 +91,40 @@ function extractProjectContext(pages: PageText[]): ProjectContext {
   const context: ProjectContext = {
     materialLegend: [], hardwareGroups: {}, generalNotes: [],
     documentType: "unknown",
+    projectInfo: { projectName: "", client: "", address: "", architect: "", planSet: "", planDate: "" },
   };
+
+  // Project info extraction from title blocks
+  // Look for common patterns in first few pages
+  const titleText = pages.slice(0, 3).map(p => p.text).join("\n");
+  
+  // Project name: "Project: X" or "PROJECT X" in title block
+  const projMatch = titleText.match(/Project[:\s]+([^\n]{3,60})/i);
+  if (projMatch) context.projectInfo.projectName = projMatch[1].trim();
+  
+  // Client/Owner
+  const clientMatch = titleText.match(/(?:Owner|Client)[:\s]+([^\n]{3,60})/i);
+  if (clientMatch) context.projectInfo.client = clientMatch[1].trim();
+  
+  // Architect
+  const archMatch = allText.match(/(?:Architect|MACKENZIE|IPA|HKS|Gensler|DLR)[:\s]*([^\n]{0,60})/i);
+  if (archMatch) context.projectInfo.architect = archMatch[0].trim().substring(0, 60);
+  
+  // Address - look near project name
+  const addrMatch = titleText.match(/(\d+\s+(?:E|W|N|S|East|West|North|South)?\s*\w+\s+(?:St|Ave|Blvd|Rd|Dr|Way|Ln|Ct|Circle|Drive|Street|Avenue|Boulevard|Road)\b[^\n]*)/i);
+  if (addrMatch) context.projectInfo.address = addrMatch[1].trim();
+  
+  // Plan set reference
+  const planMatch = allText.match(/(?:BID\s*SET|CONSTRUCTION\s*SET|PERMIT\s*SET|ISSUED\s*FOR)\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})?/i);
+  if (planMatch) {
+    context.projectInfo.planSet = planMatch[0].trim();
+    if (planMatch[1]) context.projectInfo.planDate = planMatch[1].trim();
+  }
+  // Also try "dtd" date pattern
+  if (!context.projectInfo.planDate) {
+    const dtdMatch = allText.match(/(?:dtd|dated?)\s+(\d{1,2}\s+\w+\s+\d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+    if (dtdMatch) context.projectInfo.planDate = dtdMatch[1].trim();
+  }
 
   // Document type detection - check for shop drawing indicators first (more specific)
   if (/Finish\s*Material\s*Selections|Revised\s*Submittals|SHOP\s*DRAW/i.test(allText)) {
@@ -304,7 +345,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.5, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.6, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -814,7 +855,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.5] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.6] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -852,13 +893,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.5] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.6] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.5", mode: "analyze",
+        ok: true, version: "v14.4.6", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -889,7 +930,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
 
-    // v14.4.5: Build image list for vision extraction (image-only pages)
+    // v14.4.6: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -899,7 +940,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.4.5] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.4.6] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -927,10 +968,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.5: ALWAYS override room to the API-provided roomName.
+    // v14.4.6: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.4.5: Reclassify scope_exclusions that are actually millwork
+    // v14.4.6: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -954,7 +995,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.4.5: Postprocess material code assignment from hints (with error safety)
+    // v14.4.6: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1024,10 +1065,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.5] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.6] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.5", mode: "extract",
+      ok: true, version: "v14.4.6", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1043,7 +1084,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.5] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.5", error: err?.message || "Unknown error" });
+    console.error("[v14.4.6] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.6", error: err?.message || "Unknown error" });
   }
 }

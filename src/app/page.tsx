@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.4.5 — Client-driven room-by-room extraction
+// ProjMgtAI v14.4.6 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -318,17 +318,28 @@ export default function HomePage() {
     // Remove duplicate assembly rows
     rows = rows.filter((r: any) => !r._duplicate);
 
-    // Tab 1: Project Summary
+    // Tab 1: Project Summary — with project info header
+    const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.5"], [],
-      ["Project:", filename.replace(".pdf", "")],
-      ["Document Type:", projectContext.documentType || "unknown"],
-      ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
-      ["Total Items:", stats.totalItems],
-      ["Items w/ Dimensions:", stats.withDimensions],
-      ["Items w/ Materials:", stats.withMaterials],
-      [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.6"], [],
     ];
+    // Project info block (like Coto De Casa proposal header)
+    if (pi.projectName) sum.push(["Project:", pi.projectName]);
+    else sum.push(["Project:", filename.replace(".pdf", "")]);
+    if (pi.address) sum.push(["Address:", pi.address]);
+    if (pi.client) sum.push(["Client:", pi.client]);
+    if (pi.architect) sum.push(["Architect:", pi.architect]);
+    if (pi.planSet) sum.push(["Plan Set:", pi.planSet]);
+    if (pi.planDate) sum.push(["Plan Date:", pi.planDate]);
+    sum.push(["Document Type:", projectContext.documentType || "unknown"]);
+    sum.push([]);
+    sum.push(["SCOPE SUMMARY"]);
+    sum.push(["Pages:", stats.pageCount]);
+    sum.push(["Rooms:", stats.roomCount]);
+    sum.push(["Total Items:", stats.totalItems]);
+    sum.push(["Items w/ Dimensions:", stats.withDimensions]);
+    sum.push(["Items w/ Materials:", stats.withMaterials]);
+    sum.push([]);
     if (projectContext.materialLegend?.length > 0) {
       sum.push(["MATERIAL LEGEND"]);
       sum.push(["Code", "Manufacturer", "Product", "Catalog #", "Category"]);
@@ -371,10 +382,10 @@ export default function HomePage() {
 
     const hdrs = ["#", "Room", "Type", "Description", "Section", "Qty", "Unit",
       "W(mm)", "D(mm)", "H(mm)", "W(ft-in)", "D(ft-in)", "H(ft-in)",
-      "Material Code", "Material", "Detail/Page", "Hardware", "Confidence", "Notes"];
+      "Material Code", "Material", "Detail", "Page",  "Hardware", "Confidence", "Notes"];
     const allData = [hdrs];
     rows.forEach((r: any, i: number) => {
-      // Build detail/page reference: combine sheet_ref with page numbers
+      // Build detail reference from sheet_ref
       let sheetRef = (r.sheet_ref || "").trim();
       // Filter out confidence values that leaked into sheet_ref
       if (/^(high|medium|low)$/i.test(sheetRef)) {
@@ -386,14 +397,13 @@ export default function HomePage() {
         sheetRef = "";
       }
       
-      let detailPage = sheetRef;
-      // Fall back to room page numbers if no sheet_ref
-      if (!detailPage) {
-        const roomResult = roomResults.find((rr: any) => rr.room === r.room);
-        if (roomResult?.pages?.length) {
-          detailPage = roomResult.pages.map((p: number) => `p.${p}`).join(", ");
-        }
-      }
+      // Detail column: sheet_ref (e.g. "A8.10", "5/A8.06", "D1/A-403")
+      const detail = sheetRef;
+      // Page column: room page numbers
+      const roomResult = roomResults.find((rr: any) => rr.room === r.room);
+      const pageCol = roomResult?.pages?.length
+        ? roomResult.pages.join(", ")
+        : "";
       
       allData.push([
         i+1,
@@ -411,7 +421,8 @@ export default function HomePage() {
         mmToFtIn(r.height_mm),
         r.material_code || "",
         r.material || "",
-        detailPage,
+        detail,
+        pageCol,
         r.hardware_spec || r.hardware_type || "",
         r.confidence || "",
         r.notes || ""
@@ -419,7 +430,7 @@ export default function HomePage() {
     });
     const ws2 = XLSX.utils.aoa_to_sheet(allData);
     ws2["!cols"] = [{wch:5},{wch:20},{wch:18},{wch:45},{wch:8},{wch:5},{wch:5},
-      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:15},{wch:30},{wch:10},{wch:40}];
+      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:12},{wch:18},{wch:30},{wch:10},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ws2, "All Items");
 
     // Per-room tabs
@@ -436,13 +447,12 @@ export default function HomePage() {
         }
         if (/^\d+['-]/.test(sheetRef) || /^\d+mm$/.test(sheetRef)) sheetRef = "";
         
-        let detailPage = sheetRef;
-        if (!detailPage) {
-          const roomResult = roomResults.find((rres: any) => rres.room === r.room);
-          if (roomResult?.pages?.length) {
-            detailPage = roomResult.pages.map((p: number) => `p.${p}`).join(", ");
-          }
-        }
+        const detail = sheetRef;
+        const roomResult = roomResults.find((rres: any) => rres.room === r.room);
+        const pageCol = roomResult?.pages?.length
+          ? roomResult.pages.join(", ")
+          : "";
+        
         rd.push([
           i+1,
           r.room || "",
@@ -459,7 +469,8 @@ export default function HomePage() {
           mmToFtIn(r.height_mm),
           r.material_code || "",
           r.material || "",
-          detailPage,
+          detail,
+          pageCol,
           r.hardware_spec || r.hardware_type || "",
           r.confidence || "",
           r.notes || ""
@@ -511,13 +522,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.5 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.6 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.4.5 — Improved room detection & dimension extraction
+          ★ v14.4.6 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -569,7 +580,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1445_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1446_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
