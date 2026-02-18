@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.4.3: Image-page detection + vision extraction for scanned drawings
-// v14.4.3: Multi-detail page splitting, Retail Trellis room+type
+// v14.4.4: Image-page detection + vision extraction for scanned drawings
+// v14.4.4: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -304,7 +304,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.4.3, an expert architectural millwork estimator
+You are ScopeExtractor v14.4.4, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -703,6 +703,14 @@ function cleanupRows(rows: any[]): any[] {
       }
     }
     
+    // Reclassify tall_cabinet → base_cabinet when height is 3'-0" (914mm) or below
+    if (row.item_type === "tall_cabinet" && row.height_mm) {
+      const h = Number(row.height_mm);
+      if (h > 0 && h <= 914) {
+        row.item_type = "base_cabinet";
+      }
+    }
+    
     // Clean material_code: description or confidence value leaked into wrong column
     if (row.material_code && typeof row.material_code === "string") {
       const mc = row.material_code.trim();
@@ -785,7 +793,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.4.3] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.4.4] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -823,13 +831,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.4.3] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.4.4] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.4.3", mode: "analyze",
+        ok: true, version: "v14.4.4", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -860,7 +868,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId);
 
-    // v14.4.3: Build image list for vision extraction (image-only pages)
+    // v14.4.4: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -870,7 +878,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.4.3] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.4.4] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -898,10 +906,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.4.3: ALWAYS override room to the API-provided roomName.
+    // v14.4.4: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
-    // v14.4.3: Postprocess material code assignment from hints (with error safety)
+    // v14.4.4: Reclassify scope_exclusions that are actually millwork
+    for (const row of cleanedRows) {
+      if (row.item_type !== "scope_exclusion") continue;
+      const desc = (row.description || "").toLowerCase();
+      // Stereo/equipment CABINETS are custom millwork (the cabinet, not the AV gear)
+      if (/(?:stereo|equipment|av)\s*(?:cabinet|rack|enclosure)/i.test(desc) && !/by\s*others|nic|not\s*in/i.test(desc)) {
+        row.item_type = "controls_cabinet";
+      }
+      // Base/upper/tall cabinets wrongly marked as exclusion
+      else if (/(?:base|upper|wall|tall)\s*cabinet/i.test(desc) && !/by\s*others|nic|not\s*in/i.test(desc)) {
+        if (/upper|wall.*hung/i.test(desc)) row.item_type = "upper_cabinet";
+        else if (/tall/i.test(desc)) row.item_type = "tall_cabinet";
+        else row.item_type = "base_cabinet";
+      }
+      // Countertops wrongly marked as exclusion
+      else if (/counter\s*top|laminate\s*top/i.test(desc) && !/by\s*others|nic|not\s*in/i.test(desc)) {
+        row.item_type = "countertop";
+      }
+      // Shelves wrongly marked as exclusion
+      else if (/(?:wall.*hung|adjustable|fixed)\s*shelf/i.test(desc) && !/by\s*others|nic|not\s*in/i.test(desc)) {
+        row.item_type = /adjustable/i.test(desc) ? "adjustable_shelf" : "fixed_shelf";
+      }
+    }
+
+    // v14.4.4: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -971,10 +1003,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.4.3] material assign error:", e); }
+    } catch (e) { console.error("[v14.4.4] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.4.3", mode: "extract",
+      ok: true, version: "v14.4.4", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -990,7 +1022,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.4.3] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.4.3", error: err?.message || "Unknown error" });
+    console.error("[v14.4.4] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.4.4", error: err?.message || "Unknown error" });
   }
 }

@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.4.3 — Client-driven room-by-room extraction
+// ProjMgtAI v14.4.4 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -320,7 +320,7 @@ export default function HomePage() {
 
     // Tab 1: Project Summary
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.3"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.4.4"], [],
       ["Project:", filename.replace(".pdf", "")],
       ["Document Type:", projectContext.documentType || "unknown"],
       ["Pages:", stats.pageCount], ["Rooms:", stats.roomCount],
@@ -371,14 +371,22 @@ export default function HomePage() {
 
     const hdrs = ["#", "Room", "Type", "Description", "Section", "Qty", "Unit",
       "W(mm)", "D(mm)", "H(mm)", "W(ft-in)", "D(ft-in)", "H(ft-in)",
-      "Material Code", "Material", "Hardware", "Confidence", "Notes"];
+      "Material Code", "Material", "Detail/Page", "Hardware", "Confidence", "Notes"];
     const allData = [hdrs];
     rows.forEach((r: any, i: number) => {
+      // Build detail/page reference: combine sheet_ref with page numbers
+      let detailPage = r.sheet_ref || "";
+      // If room has page numbers from the analysis, append them
+      const roomResult = roomResults.find((rr: any) => rr.room === r.room);
+      if (roomResult?.pages?.length && !detailPage) {
+        detailPage = roomResult.pages.map((p: number) => `p.${p}`).join(", ");
+      }
+      
       allData.push([
         i+1,
         r.room || "",
         r.item_type || "",
-        (r.description || "").replace(/;/g, ","),  // Sanitize semicolons
+        (r.description || "").replace(/;/g, ","),
         r.section_id || "",
         r.qty || 1,
         r.unit || "EA",
@@ -390,6 +398,7 @@ export default function HomePage() {
         mmToFtIn(r.height_mm),
         r.material_code || "",
         r.material || "",
+        detailPage,
         r.hardware_spec || r.hardware_type || "",
         r.confidence || "",
         r.notes || ""
@@ -397,7 +406,7 @@ export default function HomePage() {
     });
     const ws2 = XLSX.utils.aoa_to_sheet(allData);
     ws2["!cols"] = [{wch:5},{wch:20},{wch:18},{wch:45},{wch:8},{wch:5},{wch:5},
-      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:30},{wch:10},{wch:40}];
+      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:15},{wch:30},{wch:10},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ws2, "All Items");
 
     // Per-room tabs
@@ -407,6 +416,11 @@ export default function HomePage() {
       if (!rr.length) continue;
       const rd = [hdrs];
       rr.forEach((r: any, i: number) => {
+        let detailPage = r.sheet_ref || "";
+        const roomResult = roomResults.find((rres: any) => rres.room === r.room);
+        if (roomResult?.pages?.length && !detailPage) {
+          detailPage = roomResult.pages.map((p: number) => `p.${p}`).join(", ");
+        }
         rd.push([
           i+1,
           r.room || "",
@@ -423,6 +437,7 @@ export default function HomePage() {
           mmToFtIn(r.height_mm),
           r.material_code || "",
           r.material || "",
+          detailPage,
           r.hardware_spec || r.hardware_type || "",
           r.confidence || "",
           r.notes || ""
@@ -474,13 +489,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.3 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.4.4 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.4.3 — Improved room detection & dimension extraction
+          ★ v14.4.4 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -532,7 +547,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1443_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1444_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
