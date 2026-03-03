@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.5.3: Image-page detection + vision extraction for scanned drawings
-// v14.5.3: Multi-detail page splitting, Retail Trellis room+type
+// v14.5.4: Image-page detection + vision extraction for scanned drawings
+// v14.5.4: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -198,81 +198,18 @@ function extractProjectContext(pages: PageText[]): ProjectContext {
 //   5. Pages that only match via general terms go to most-specific match
 
 function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
-  // ─── Step 0: Classify page types — filter out non-millwork pages ───
-  // Architectural plan sets contain many page types. Only interior elevation,
-  // casework detail, millwork detail, and enlarged plan pages have extractable items.
-  const isMillworkPage = (text: string): boolean => {
-    const t = text.toLowerCase();
-    const len = text.replace(/\s/g, "").length;
-    
-    // Very short pages (cover sheets, blank, indices) — skip
-    if (len < 80) return false;
-    
-    // Strong millwork indicators (casework dimensions, material callouts)
-    const millworkSignals = [
-      /\bWD-?\d/i,                    // WD-1, WD-02 wood material codes
-      /\bPL(?:AM)?-?\d/i,            // PL-1, PLAM laminate codes
-      /\bM-\d/i,                      // M-1 countertop materials
-      /\b(?:cabinet|countertop|shelf|shelves|drawer|vanit)/i,
-      /\b(?:adjustable|concealed|hinge|Blum)\b/i,
-      /\b(?:upper|base|tall|wall\s*hung)\s*cab/i,
-      /\b(?:toe\s*kick|backsplash|nosing)\b/i,
-      /\b(?:transaction\s*top|die\s*wall)\b/i,
-      /\b(?:wainscot|paneling|moulding|crown)\b/i,
-      /\b(?:display\s*case|wine\s*(?:rack|cabinet|display))\b/i,
-      /\b(?:slat\s*(?:unit|wall|screen))\b/i,
-      /\bveneer\b/i,
-      /\bply(?:wood)?\b/i,
-      /\binterior\s*elevation/i,
-      /\bcasework/i,
-      /\bmillwork/i,
-      /\benlarged\s*(?:plan|elevation|section|detail)/i,
-      /\bfinish\s*schedule/i,
-      /\d+['"]\s*[-x×]\s*\d+['"]/,   // Dimension patterns like 8'-0" x 2'-6"
-    ];
-    
-    // Strong non-millwork indicators (skip these pages)
-    const nonMillworkSignals = [
-      /\b(?:demolition|demo)\s*(?:plan|note)/i,
-      /\b(?:electrical|plumbing|mechanical|hvac|fire)\s*(?:plan|note|schedule)/i,
-      /\breflected\s*ceiling\s*plan/i,
-      /\b(?:site|roof|foundation|structural)\s*plan/i,
-      /\blife\s*safety/i,
-      /\b(?:ada|accessibility)\s*(?:compliance|requirements|notes)/i,
-      /\bgeneral\s*(?:notes|requirements|conditions)\b/i,
-      /\b(?:code|building\s*code)\s*(?:analysis|summary|compliance)/i,
-      /\b(?:specifications?\s*(?:section|division))/i,
-      /\bsheet\s*index/i,
-      /\b(?:cover\s*sheet|title\s*sheet)\b/i,
-      /\bdoor\s*(?:schedule|hardware\s*schedule)/i,
-    ];
-    
-    let millScore = 0;
-    let nonMillScore = 0;
-    
-    for (const re of millworkSignals) {
-      if (re.test(text)) millScore++;
-    }
-    for (const re of nonMillworkSignals) {
-      if (re.test(text)) nonMillScore++;
-    }
-    
-    // ANY millwork signal = always include (even if spec text is present too)
-    if (millScore >= 1) return true;
-    // No millwork signals: only exclude if STRONG non-millwork indicators
-    if (nonMillScore >= 3 && millScore === 0) return false;
-    // Default: include if text has dimension-like numbers (architectural drawing)
-    if (/\d{2,3}\s+\d{2,3}/.test(text)) return true;
-    // Include if less than 3000 chars (likely a drawing, not a spec page)
-    if (len < 3000) return true;
-    // Very long text with zero millwork signals = probably spec/notes page
-    if (len > 5000 && millScore === 0) return false;
-    return true;
-  };
-
-  // Filter pages
-  const millworkPages = pages.filter(p => isMillworkPage(p.text));
-  console.log(`[v14.5.3] Page filter: ${pages.length} total → ${millworkPages.length} millwork pages (${pages.length - millworkPages.length} filtered)`);
+  // ─── Step 0: Page type classification (logging only, no filtering) ───
+  // Log page type stats for debugging but don't filter - let the LLM decide
+  let millworkCount = 0;
+  let specCount = 0;
+  for (const p of pages) {
+    const t = p.text.toLowerCase();
+    const hasMill = /\b(?:cabinet|countertop|shelf|vanit|drawer|WD-?\d|PL-?\d|M-\d|veneer|plywood|millwork|casework|wainscot)/i.test(p.text);
+    const hasSpec = /\b(?:general\s*notes|code\s*analysis|ada|accessibility|demolition\s*plan|electrical\s*plan)/i.test(p.text);
+    if (hasMill) millworkCount++;
+    if (hasSpec && !hasMill) specCount++;
+  }
+  console.log(`[v14.5.4] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
 
   // Room patterns with specificity scores (higher = more specific = wins ties)
   const titlePatterns: [RegExp, string, number][] = [
@@ -350,7 +287,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
   const roomMap = new Map<string, number[]>();
 
-  for (const page of millworkPages) {
+  for (const page of pages) {
     // Extract title zone: first and last 600 chars
     const titleZone = (
       page.text.substring(0, 600) + "\n" +
@@ -457,7 +394,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.5.3, an expert architectural millwork estimator
+You are ScopeExtractor v14.5.4, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -1061,7 +998,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.5.3] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.5.4] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -1099,13 +1036,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.5.3] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.5.4] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.5.3", mode: "analyze",
+        ok: true, version: "v14.5.4", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -1130,10 +1067,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
-    // v14.5.3: Extract sheet number & detail references from OCR text
+    // v14.5.4: Extract sheet number & detail references from OCR text
     const sheetInfo = extractSheetDetails(combinedText);
     if (sheetInfo.sheetNumber) {
-      console.log(`[v14.5.3] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+      console.log(`[v14.5.4] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
@@ -1142,7 +1079,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.5.3: Build image list for vision extraction (image-only pages)
+    // v14.5.4: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -1152,7 +1089,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.5.3] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.5.4] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -1180,10 +1117,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.5.3: ALWAYS override room to the API-provided roomName.
+    // v14.5.4: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
     
-    // v14.5.3: Auto-assign sheet_ref from extracted sheet/detail info
+    // v14.5.4: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
       for (const row of cleanedRows) {
         if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
@@ -1192,7 +1129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.3: Reclassify scope_exclusions that are actually millwork
+    // v14.5.4: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -1216,7 +1153,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.3: Postprocess material code assignment from hints (with error safety)
+    // v14.5.4: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1286,10 +1223,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.5.3] material assign error:", e); }
+    } catch (e) { console.error("[v14.5.4] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.5.3", mode: "extract",
+      ok: true, version: "v14.5.4", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1306,7 +1243,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.5.3] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.5.3", error: err?.message || "Unknown error" });
+    console.error("[v14.5.4] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.5.4", error: err?.message || "Unknown error" });
   }
 }
