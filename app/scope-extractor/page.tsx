@@ -32,11 +32,11 @@ export default function HomePage() {
     if (f) {
       const sizeMB = f.size / (1024 * 1024);
       if (sizeMB > 100) {
-        setError(\`File is \${sizeMB.toFixed(0)}MB — max recommended is 100MB. Try splitting into smaller sets.\`);
+        setError("File is " + sizeMB.toFixed(0) + "MB — max recommended is 100MB. Try splitting into smaller sets.");
         return;
       }
       if (sizeMB > 50) {
-        setProgress(\`Large file (\${sizeMB.toFixed(0)}MB) — processing may take longer.\`);
+        setProgress("Large file (" + sizeMB.toFixed(0) + "MB) — processing may take longer.");
       }
       setFile(f); setError("");
     }
