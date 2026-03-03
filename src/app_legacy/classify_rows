@@ -1,0 +1,355 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://127.0.0.1:8080';
+
+type WbsRow = {
+  id: number;
+  in_bid: boolean;
+  wbs_class: string;
+  qty: number;
+  unit: string;
+  location: string;
+  sheet: string;
+  elevation: string;
+  description: string;
+  page: number;
+};
+
+type WbsMeta = {
+  total_rows: number;
+  max_rows: number;
+};
+
+export default function WbsBuilderPage() {
+  const [rows, setRows] = useState<WbsRow[]>([]);
+  const [meta, setMeta] = useState<WbsMeta | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [classifying, setClassifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // ------------------------------------------------------------
+  // Load current WBS rows from backend
+  // ------------------------------------------------------------
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const res = await fetch(`${BACKEND_URL}/api/current_wbs`);
+        if (!res.ok) {
+          throw new Error(`Failed to load WBS rows (${res.status})`);
+        }
+
+        const data = await res.json();
+
+        setRows(data.rows ?? []);
+        setMeta({
+          total_rows: data.total_rows ?? (data.rows?.length ?? 0),
+          max_rows: data.max_rows ?? 0,
+        });
+      } catch (err: any) {
+        console.error(err);
+        setError(err.message ?? 'Failed to load WBS rows from backend.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  // ------------------------------------------------------------
+  // AI classify rows handler (optional)
+  // ------------------------------------------------------------
+  const handleClassifyRows = async () => {
+    try {
+      setClassifying(true);
+      setError(null);
+
+      const res = await fetch(`${BACKEND_URL}/api/classify_rows`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        throw new Error(`AI classify failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      if (Array.isArray(data.rows)) {
+        setRows(data.rows);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message ?? 'AI classification failed.');
+    } finally {
+      setClassifying(false);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // Local handlers (checkbox, text, etc.)
+  // ------------------------------------------------------------
+  const toggleInBid = (id: number) => {
+    setRows((prev) =>
+      prev.map((row) =>
+        row.id === id ? { ...row, in_bid: !row.in_bid } : row,
+      ),
+    );
+  };
+
+  const updateRowField = (
+    id: number,
+    field: keyof WbsRow,
+    value: string | number | boolean,
+  ) => {
+    setRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [field]: value } : row)),
+    );
+  };
+
+  // ------------------------------------------------------------
+  // Derived counters
+  // ------------------------------------------------------------
+  const rowsInBid = rows.filter((r) => r.in_bid).length;
+  const millworkRows = rows.filter(
+    (r) => r.in_bid && r.wbs_class !== 'Unc',
+  ).length;
+  const totalRows = rows.length;
+
+  // ------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 p-8">
+        <div className="max-w-6xl mx-auto text-sm text-slate-300">
+          Loading WBS rows…
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 lg:p-8">
+      <div className="max-w-7xl mx-auto space-y-4">
+        {/* Header */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-lg font-semibold text-slate-50">
+              ProjMgtAI — Millwork WBS Builder
+            </h1>
+            <p className="text-xs text-slate-400">
+              Review and refine scope rows before pricing and bid generation.
+            </p>
+
+            {/* Beta limit hint */}
+            {meta &&
+              meta.total_rows > 0 &&
+              meta.max_rows > 0 &&
+              meta.total_rows > meta.max_rows && (
+                <p className="mt-1 text-xs text-amber-300">
+                  Showing {meta.max_rows.toLocaleString()} of{' '}
+                  {meta.total_rows.toLocaleString()} rows (Beta limit).
+                </p>
+              )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+            <span>Rows in bid: {rowsInBid}</span>
+            <span className="hidden sm:inline text-slate-500">|</span>
+            <span>Millwork rows: {millworkRows}</span>
+            <span className="hidden sm:inline text-slate-500">|</span>
+            <span>Total rows (current view): {totalRows}</span>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => (window.location.href = '/upload')}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+          >
+            ← Back to Upload
+          </button>
+
+          <button
+            type="button"
+            onClick={handleClassifyRows}
+            disabled={classifying}
+            className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:opacity-60"
+          >
+            {classifying ? 'Classifying…' : 'AI Classify Rows'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              window.open(`${BACKEND_URL}/api/export_wbs_csv`, '_blank')
+            }
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
+          >
+            Export WBS to Excel (CSV)
+          </button>
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div className="rounded-md border border-red-500/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+            {error}
+          </div>
+        )}
+
+        {/* Table */}
+        <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/60">
+          {rows.length === 0 ? (
+            <div className="px-4 py-6 text-xs text-slate-400">
+              No rows loaded. Try going back to Upload, processing a PDF, and
+              returning to the WBS Builder.
+            </div>
+          ) : (
+            <table className="min-w-full border-collapse text-[11px]">
+              <thead className="bg-slate-900/80 text-slate-300">
+                <tr>
+                  <th className="px-2 py-2 text-left font-medium">Bid</th>
+                  <th className="px-2 py-2 text-left font-medium">Class</th>
+                  <th className="px-2 py-2 text-left font-medium">Qty</th>
+                  <th className="px-2 py-2 text-left font-medium">Unit</th>
+                  <th className="px-2 py-2 text-left font-medium">Location</th>
+                  <th className="px-2 py-2 text-left font-medium">Sheet</th>
+                  <th className="px-2 py-2 text-left font-medium">Elevation</th>
+                  <th className="px-2 py-2 text-left font-medium">
+                    Description
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium">Pg</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="border-t border-slate-800/60 hover:bg-slate-900/40"
+                  >
+                    {/* Bid checkbox */}
+                    <td className="px-2 py-1 align-top">
+                      <input
+                        type="checkbox"
+                        className="h-3 w-3 rounded border-slate-600 bg-slate-900 text-emerald-500"
+                        checked={row.in_bid}
+                        onChange={() => toggleInBid(row.id)}
+                      />
+                    </td>
+
+                    {/* Class */}
+                    <td className="px-2 py-1 align-top">
+                      <select
+                        className="w-20 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.wbs_class}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'wbs_class', e.target.value)
+                        }
+                      >
+                        <option value="Unc">Unc</option>
+                        <option value="MW">MW</option>
+                        <option value="PL">PL</option>
+                        <option value="GL">GL</option>
+                        <option value="HM">HM</option>
+                      </select>
+                    </td>
+
+                    {/* Qty */}
+                    <td className="px-2 py-1 align-top">
+                      <input
+                        type="number"
+                        className="w-14 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.qty}
+                        onChange={(e) =>
+                          updateRowField(
+                            row.id,
+                            'qty',
+                            Number(e.target.value || 0),
+                          )
+                        }
+                      />
+                    </td>
+
+                    {/* Unit */}
+                    <td className="px-2 py-1 align-top">
+                      <select
+                        className="w-16 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.unit}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'unit', e.target.value)
+                        }
+                      >
+                        <option value="EA">EA</option>
+                        <option value="LF">LF</option>
+                        <option value="SF">SF</option>
+                      </select>
+                    </td>
+
+                    {/* Location */}
+                    <td className="px-2 py-1 align-top">
+                      <input
+                        type="text"
+                        className="w-28 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.location}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'location', e.target.value)
+                        }
+                      />
+                    </td>
+
+                    {/* Sheet */}
+                    <td className="px-2 py-1 align-top">
+                      <input
+                        type="text"
+                        className="w-24 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.sheet}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'sheet', e.target.value)
+                        }
+                      />
+                    </td>
+
+                    {/* Elevation */}
+                    <td className="px-2 py-1 align-top">
+                      <input
+                        type="text"
+                        className="w-24 rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.elevation}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'elevation', e.target.value)
+                        }
+                      />
+                    </td>
+
+                    {/* Description */}
+                    <td className="px-2 py-1 align-top">
+                      <textarea
+                        className="h-16 w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-1 py-0.5 text-[11px] text-slate-100"
+                        value={row.description}
+                        onChange={(e) =>
+                          updateRowField(row.id, 'description', e.target.value)
+                        }
+                      />
+                    </td>
+
+                    {/* Page */}
+                    <td className="px-2 py-1 align-top text-right text-slate-300">
+                      {row.page}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}

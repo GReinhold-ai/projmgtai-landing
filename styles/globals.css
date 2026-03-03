@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* ---- Theme tokens (Tailwind v4) ---- */
+@theme inline {
+  /* Base (keep these if you want light/dark switching) */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  /* Fonts (optional, keep if you’re using Geist) */
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Rewmo palette */
+  --color-rewmo-deep:  #003B49;
+  --color-rewmo-coral: #FF9151;
+  --color-rewmo-aqua:  #15C5C1;
+  --color-rewmo-ink:   #0B1F23;
+  --color-rewmo-fog:   #E6F2F3;
+  --color-rewmo-card:  #0E4450;
+  --color-white:       #FFFFFF;
+
+  /* Shadows / radii you’ll likely reuse */
+  --shadow-soft: 0 8px 24px rgba(0,0,0,0.18);
+  --shadow-subtle: 0 4px 16px rgba(0,0,0,0.10);
+  --radius-xl2: 1.25rem;
+}
+
+/* ---- Light / Dark surface variables (optional) ----*/
+:root {
+  --background: theme(colors.rewmo-deep);
+  --foreground: theme(colors.white);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: theme(colors.rewmo-deep);
+    --foreground: theme(colors.white);
+  }
+}
+
+/* ---- Base document styling ---- */
+html, body {
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---- Small helpers (use Tailwind most of the time) ---- */
+.card {
+  background: color-mix(in oklab, theme(colors.rewmo-card) 90%, transparent);
+  backdrop-filter: blur(6px);
+  border-radius: var(--radius-xl2);
+  box-shadow: var(--shadow-soft);
+}
+
+.btn-primary {
+  background: theme(colors.rewmo-coral);
+  color: theme(colors.rewmo-ink);
+  font-weight: 600;
+  border-radius: var(--radius-xl2);
+  transition: opacity .15s ease;
+}
+.btn-primary:hover { opacity: .9; }
+
+/* Polished input style (when you don’t want to type long class lists) */
+.rewmo-input {
+  background: theme(colors.white);
+  color: theme(colors.rewmo-ink);
+  border: 1px solid color-mix(in oklab, white 12%, transparent);
+  border-radius: 0.75rem;
+}
+.rewmo-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in oklab, theme(colors.rewmo-aqua) 25%, transparent);
+  border-color: theme(colors.rewmo-aqua);
+}
