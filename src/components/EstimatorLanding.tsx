@@ -1,394 +1,427 @@
-// src/components/EstimatorLanding.tsx
-"use client";
+'use client'
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { getFirebaseApp } from "@/firebase";
+import { useEffect, useMemo, useState } from 'react'
+import { z } from 'zod'
+import { roles, trades as ALL_TRADES, projectTypes } from '@/lib/constants'
+import { parsePlansAndSaveScopes, type ScopeItem } from '@/lib/parsePlansAndSaveScopes'
+import { exportTradeToXLSX, exportAllTradesToXLSX } from '@/lib/exportToXLSX'
+import { Button } from '@/components/ui/button'
 
-import {
-  getAuth,
-  onAuthStateChanged,
-  signInAnonymously,
-  setPersistence,
-  browserLocalPersistence,
-  User,
-} from "firebase/auth";
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  serverTimestamp,
-  writeBatch,
-} from "firebase/firestore";
+import { getFirebaseApp } from '@/lib/firebase'
+import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import { getFirestore, doc, getDoc, setDoc, serverTimestamp, increment } from 'firebase/firestore'
 
-// --- Small helpers -----------------------------------------------------------
+type ScopesByTrade = Record<string, ScopeItem[]>
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") || "http://127.0.0.1:8080";
-
-type Trade =
-  | "Electrical"
-  | "Mechanical"
-  | "Plumbing"
-  | "Fire Protection"
-  | "Structural"
-  | "Architectural"
-  | "Civil";
-
-const ALL_TRADES: Trade[] = [
-  "Electrical",
-  "Mechanical",
-  "Plumbing",
-  "Fire Protection",
-  "Structural",
-  "Architectural",
-  "Civil",
-];
-
-// -----------------------------------------------------------------------------
+const schema = z.object({
+  role: z.string().min(1, 'Role is required'),
+  companyName: z.string().min(1, 'Company name is required'),
+  email: z.string().email('Enter a valid email'),
+  projectName: z.string().min(1, 'Project name is required'),
+  projectType: z.string().min(1, 'Project type is required'),
+  location: z.string().min(1, 'Location is required'),
+  startDate: z.string().optional(),
+  notes: z.string().optional(),
+  trades: z.array(z.string()).min(1, 'Select at least one trade'),
+})
 
 export default function EstimatorLanding() {
-  // ----- Firebase singletons -----
-  const app = useMemo(() => getFirebaseApp(), []);
-  const auth = useMemo(() => getAuth(app), [app]);
-  const db = useMemo(() => getFirestore(app), [app]);
+  // —— Firebase ——
+  const app = useMemo(() => getFirebaseApp(), [])
+  const auth = useMemo(() => getAuth(app), [app])
+  const db = useMemo(() => getFirestore(app), [app])
 
-  // ----- Auth state -----
-  const [uid, setUid] = useState<string | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  // —— User + quota ——
+  const [uid, setUid] = useState<string | null>(null)
+  const [projectQuotaUsed, setProjectQuotaUsed] = useState<number>(0)
+  const FREE_QUOTA = 3
+  const quotaRemaining = Math.max(FREE_QUOTA - projectQuotaUsed, 0)
+  const quotaExceeded = quotaRemaining <= 0
 
   useEffect(() => {
-    let unsub: (() => void) | undefined;
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setUid(user.uid)
+        const userRef = doc(db, `users/${user.uid}`)
+        const snap = await getDoc(userRef)
+        setProjectQuotaUsed(snap.exists() ? (snap.data().stats?.projectsParsed ?? 0) : 0)
+      } else {
+        setUid(null)
+        setProjectQuotaUsed(0)
+      }
+    })
+    return () => unsub()
+  }, [auth, db])
 
-    (async () => {
-      await setPersistence(auth, browserLocalPersistence);
+  // —— Form state ——
+  const [step, setStep] = useState(1)
+  const [formData, setFormData] = useState({
+    role: '',
+    companyName: '',
+    email: '',
+    projectName: '',
+    projectType: '',
+    location: '',
+    startDate: '',
+    notes: '',
+    trades: [] as string[],
+  })
+  const [files, setFiles] = useState<File[]>([])
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
-      unsub = onAuthStateChanged(auth, async (user: User | null) => {
-        if (!user) {
-          try {
-            await signInAnonymously(auth);
-            // onAuthStateChanged will fire again with the user
-            return;
-          } catch (err) {
-            console.error("Anonymous sign-in failed:", err);
-          }
-        }
-        setUid(user ? user.uid : null);
-        setAuthReady(true);
-      });
-    })();
+  // —— Parse state ——
+  const [parsing, setParsing] = useState(false)
+  const [scopes, setScopes] = useState<ScopesByTrade | null>(null)
+  const [projectId, setProjectId] = useState<string>('')
 
-    return () => {
-      if (unsub) unsub();
-    };
-  }, [auth]);
+  // —— Handlers ——
+  const handleNext = () => setStep((s) => Math.min(3, s + 1))
+  const handleBack = () => setStep((s) => Math.max(1, s - 1))
 
-  // ----- UI state (very lightweight wizard) -----
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target
+    setFormData((p) => ({ ...p, [name]: value }))
+  }
 
-  // Step 1 – basic (optional) project info
-  const [company, setCompany] = useState("");
-  const [email, setEmail] = useState("");
-  const [projectName, setProjectName] = useState("");
+  const toggleTrade = (t: string) => {
+    setFormData((p) => {
+      const exists = p.trades.includes(t)
+      return { ...p, trades: exists ? p.trades.filter((x) => x !== t) : [...p.trades, t] }
+    })
+  }
 
-  // Step 2 – file + trades
-  const [file, setFile] = useState<File | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fs = Array.from(e.target.files || [])
+    const pdfs = fs.filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+    setFiles(pdfs)
+  }
 
-  // Parse
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string>("");
-
-  // ----- Helpers -----
-
-  const toggleTrade = (t: Trade) => {
-    setTrades((prev) =>
-      prev.includes(t) ? prev.filter((x) => x !== t) : prev.concat(t)
-    );
-  };
-
-  const canGoNextFromStep1 = true; // nothing required on step 1
-  const canGoNextFromStep2 = !!file && trades.length > 0;
-  const parseDisabled = !authReady || !uid || !file || trades.length === 0 || busy;
-
-  // Creates a project doc prior to parsing
-  const ensureProjectDoc = useCallback(async (): Promise<string> => {
-    if (!uid) throw new Error("Please sign in to create a project.");
-    const projectId = crypto.randomUUID();
-
-    await setDoc(doc(db, "projects", projectId), {
-      owner: uid,
-      company: company || null,
-      email: email || null,
-      name: projectName || null,
-      createdAt: serverTimestamp(),
-      status: "draft",
-      uiVersion: 1,
-    });
-
-    return projectId;
-  }, [db, uid, company, email, projectName]);
-
-  // Saves parsed results to Firestore: projects/<id>/scopes/<trade>
-  const saveResults = useCallback(
-    async (projectId: string, resultsByTrade: Record<string, any[]>) => {
-      const batch = writeBatch(db);
-      Object.entries(resultsByTrade).forEach(([trade, items]) => {
-        const ref = doc(db, "projects", projectId, "scopes", trade);
-        batch.set(ref, {
-          trade,
-          items: Array.isArray(items) ? items : [],
-          savedAt: serverTimestamp(),
-        });
-      });
-      await batch.commit();
-
-      // also mark project as parsed
-      await setDoc(
-        doc(db, "projects", projectId),
-        { status: "parsed", parsedAt: serverTimestamp() },
-        { merge: true }
-      );
-    },
-    [db]
-  );
-
-  // Core parse action
-  const handleParse = useCallback(async () => {
-    if (!file) return;
-    if (!uid) {
-      alert("Please wait for sign-in (or refresh).");
-      return;
+  const validate = () => {
+    const result = schema.safeParse({ ...formData })
+    const fileErr = files.length === 0 ? { file: 'Please upload a PDF.' } : {}
+    if (!result.success) {
+      const zErrs = result.error.issues.reduce((acc, it) => {
+        const k = it.path[0]?.toString() ?? 'form'
+        acc[k] = it.message
+        return acc
+      }, {} as Record<string, string>)
+      setErrors({ ...zErrs, ...fileErr })
+      return false
     }
+    setErrors(fileErr)
+    return Object.keys(fileErr).length === 0
+  }
 
-    setBusy(true);
-    setStatus("Creating project…");
+  // Create a project shell in Firestore (client-side for MVP)
+  const ensureProjectDoc = async (): Promise<string> => {
+    if (projectId) return projectId
+    if (!uid) throw new Error('Please sign in to create a project.')
+    const id = crypto.randomUUID()
+    const ref = doc(db, `projects/${id}`)
+    await setDoc(ref, {
+      owner: uid,
+      ...formData,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      phase: 'phase1-subs',
+      status: 'intake',
+    })
+    setProjectId(id)
+    return id
+  }
+
+  const handleParse = async () => {
+    if (quotaExceeded) {
+      alert(`Free tier limit reached. You used ${projectQuotaUsed}/${FREE_QUOTA} projects.`)
+      return
+    }
+    if (!validate()) return
 
     try {
-      const projectId = await ensureProjectDoc();
+      setParsing(true)
+      const pid = await ensureProjectDoc()
+      const pdf = files[0]
 
-      setStatus("Uploading & parsing…");
+      // Optional: pass auth token to backend if you enforce it server-side
+      const user = auth.currentUser
+      const authToken = user ? await user.getIdToken() : undefined
 
-      const form = new FormData();
-      form.append("file", file, file.name);
-      form.append("trades_json", JSON.stringify(trades));
+      const results = await parsePlansAndSaveScopes({
+        apiBase: process.env.NEXT_PUBLIC_API_BASE as string,
+        file: pdf,
+        selectedTrades: formData.trades,
+        firebaseApp: app,
+        projectId: pid,
+        authToken,
+        uid: uid ?? undefined,
+        plan: 'free',
+      })
+      setScopes(results)
 
-      const resp = await fetch(`${API_BASE}/analyze/parse_plans`, {
-        method: "POST",
-        headers: {
-          // backend expects these:
-          "X-User-Id": uid,
-          "X-Plan": "free",
-        },
-        body: form,
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => "");
-        throw new Error(
-          `Backend error ${resp.status} ${resp.statusText}${
-            errText ? `: ${errText}` : ""
-          }`
-        );
+      // Update usage counter + project status
+      if (uid) {
+        const uRef = doc(db, `users/${uid}`)
+        await setDoc(
+          uRef,
+          { stats: { projectsParsed: increment(1) }, updatedAt: serverTimestamp() },
+          { merge: true }
+        )
+        setProjectQuotaUsed((x) => x + 1)
       }
-
-      const data = (await resp.json()) as {
-        trades: string[];
-        results: Record<string, any[]>;
-      };
-
-      setStatus("Saving results…");
-      await saveResults(projectId, data.results || {});
-      setStatus("Done! Results saved to Firestore.");
-      setStep(3);
+      const pRef = doc(db, `projects/${pid}`)
+      await setDoc(pRef, { status: 'parsed', updatedAt: serverTimestamp() }, { merge: true })
     } catch (err: any) {
-      console.error(err);
-      setStatus(err?.message || "Failed to parse.");
-      alert(status || err?.message || "Failed to parse.");
+      console.error(err)
+      alert(err?.message || 'Failed to parse plans.')
     } finally {
-      setBusy(false);
+      setParsing(false)
     }
-  }, [file, trades, uid, ensureProjectDoc, saveResults]);
+  }
 
-  // ----- Render -----
+  // —— UI ——
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
-      <h1 className="text-2xl font-semibold mb-1">
-        ProjMgtAI — Subcontractor Bidding Assistant
-      </h1>
-      <p className="text-sm text-gray-600 mb-6">
-        Intake your project, upload plans (PDF), select trades, and
-        auto-extract scope → export XLSX.
-      </p>
+    <div className="mx-auto max-w-3xl p-6">
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold">ProjMgtAI — Subcontractor Bidding Assistant</h1>
+        <p className="text-sm text-gray-600">
+          Intake your project, upload plans (PDF), select trades, and auto-extract scope → export XLSX.
+        </p>
+      </header>
 
-      <div className="rounded border p-3 mb-6 text-sm">
-        <strong>Free Tier:</strong> 3 projects total.&nbsp;
-        <span className="inline-block ml-2">
-          {authReady ? (
-            uid ? (
-              <span className="text-green-600">Signed in (anonymous)</span>
-            ) : (
-              <span className="text-red-600">Not signed in</span>
-            )
-          ) : (
-            <span>Checking sign-in…</span>
-          )}
-        </span>
+      {/* Free-tier banner */}
+      <div className="mb-4 rounded-xl border p-3 text-sm">
+        <div><b>Free Tier:</b> {FREE_QUOTA} projects total.</div>
+        <div>Used: {projectQuotaUsed} • Remaining: {quotaRemaining}</div>
       </div>
 
-      {/* Step indicator */}
-      <div className="flex items-center gap-2 mb-4 text-sm">
-        <span className={`h-2 w-2 rounded-full ${step >= 1 ? "bg-green-600" : "bg-gray-300"}`} />
-        <span>Project Info</span>
-        <span className="mx-1 text-gray-400">→</span>
-        <span className={`h-2 w-2 rounded-full ${step >= 2 ? "bg-green-600" : "bg-gray-300"}`} />
-        <span>Upload & Trades</span>
-        <span className="mx-1 text-gray-400">→</span>
-        <span className={`h-2 w-2 rounded-full ${step >= 3 ? "bg-green-600" : "bg-gray-300"}`} />
-        <span>Parse & Export</span>
+      {/* Steps */}
+      <div className="mb-4 flex items-center gap-2 text-sm">
+        <StepDot active={step >= 1} label="Project Info" />
+        <div className="opacity-50">→</div>
+        <StepDot active={step >= 2} label="Upload & Trades" />
+        <div className="opacity-50">→</div>
+        <StepDot active={step >= 3} label="Parse & Export" />
       </div>
 
-      {/* STEP 1 */}
       {step === 1 && (
-        <div className="rounded border p-4">
-          <h2 className="font-medium mb-3">1) Project Information</h2>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm">Company</label>
-              <input
-                className="border rounded w-full p-2"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="Acme Construction"
-              />
-            </div>
-            <div>
-              <label className="text-sm">Email</label>
-              <input
-                className="border rounded w-full p-2"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="estimator@acme.com"
-              />
-            </div>
-            <div className="md:col-span-2">
-              <label className="text-sm">Project Name</label>
-              <input
-                className="border rounded w-full p-2"
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="Tenant Improvement — 3rd Floor"
-              />
-            </div>
+        <section className="rounded-2xl border p-4 space-y-4">
+          <h2 className="font-semibold">1) Project Information</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <SelectField label="Role" name="role" value={formData.role} onChange={handleChange} options={roles} error={errors.role} />
+            <InputField label="Company" name="companyName" value={formData.companyName} onChange={handleChange} error={errors.companyName} />
+            <InputField label="Email" name="email" type="email" value={formData.email} onChange={handleChange} error={errors.email} />
+            <InputField label="Project Name" name="projectName" value={formData.projectName} onChange={handleChange} error={errors.projectName} />
+            <SelectField label="Project Type" name="projectType" value={formData.projectType} onChange={handleChange} options={projectTypes} error={errors.projectType} />
+            <InputField label="Location" name="location" value={formData.location} onChange={handleChange} error={errors.location} />
+            <InputField label="Start Date (optional)" name="startDate" type="date" value={formData.startDate} onChange={handleChange} />
+            <TextAreaField label="Notes (optional)" name="notes" value={formData.notes} onChange={handleChange} />
           </div>
-
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              className="px-4 py-2 rounded border"
-              onClick={() => {
-                // optionally clear form
-                setCompany("");
-                setEmail("");
-                setProjectName("");
-              }}
-            >
-              Clear
-            </button>
-            <button
-              className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-              onClick={() => setStep(2)}
-              disabled={!canGoNextFromStep1}
-            >
-              Next
-            </button>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={handleNext}>Next</Button>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* STEP 2 */}
       {step === 2 && (
-        <div className="rounded border p-4">
-          <h2 className="font-medium mb-3">2) Upload Plans & Select Trades</h2>
+        <section className="rounded-2xl border p-4 space-y-4">
+          <h2 className="font-semibold">2) Upload Plans & Select Trades</h2>
 
-          <div className="mb-4">
-            <label className="text-sm block mb-1">Plan Set (PDF)</label>
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-            {file && (
-              <div className="text-xs text-gray-600 mt-1">
-                Selected: {file.name} ({Math.ceil(file.size / 1024)} KB)
-              </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Plan Set (PDF)</label>
+            <input type="file" accept="application/pdf,.pdf" onChange={onFileChange} />
+            {errors.file && <p className="text-xs text-red-600">{errors.file}</p>}
+            {files.length > 0 && (
+              <p className="text-xs text-gray-500">
+                Selected: <span className="font-mono">{files[0].name}</span> ({Math.round(files[0].size / 1024)} KB)
+              </p>
             )}
           </div>
 
-          <div className="mb-4">
-            <label className="text-sm block mb-2">Trades</label>
-            <div className="flex flex-wrap gap-2">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Trades</label>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
               {ALL_TRADES.map((t) => {
-                const active = trades.includes(t);
+                const active = formData.trades.includes(t)
                 return (
                   <button
+                    type="button"
                     key={t}
                     onClick={() => toggleTrade(t)}
-                    className={`px-3 py-1 rounded border text-sm ${
-                      active ? "bg-emerald-50 border-emerald-400" : ""
-                    }`}
-                    type="button"
+                    className={`rounded-xl border px-3 py-2 text-sm text-left transition 
+                      ${active ? 'border-emerald-500 ring-2 ring-emerald-200' : 'hover:bg-gray-50'}`}
+                    title={t}
                   >
-                    {active ? "✓ " : ""} {t}
+                    {active ? '✅ ' : ''}{t}
                   </button>
-                );
+                )
               })}
+            </div>
+            {errors.trades && <p className="text-xs text-red-600">{errors.trades}</p>}
+          </div>
+
+          <div className="flex justify-between">
+            <Button variant="ghost" onClick={handleBack}>Back</Button>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => { if (validate()) setStep(3) }}>Next</Button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {step === 3 && (
+        <section className="rounded-2xl border p-4 space-y-4">
+          <h2 className="font-semibold">3) Parse & Export</h2>
+
+          <div className="rounded-xl border p-3 text-sm">
+            <p className="mb-2">
+              This will analyze your PDF for the selected trades and create a scope list per trade.
+              Results are saved in Firestore under <code>projects/&lt;id&gt;/scopes/&lt;trade&gt;</code>.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button disabled={parsing || quotaExceeded || files.length === 0} onClick={handleParse}>
+                {parsing ? 'Parsing…' : 'Parse Plans'}
+              </Button>
+              {quotaExceeded && <span className="text-xs text-red-600">Free tier limit reached.</span>}
             </div>
           </div>
 
-          <div className="mt-4 flex justify-between">
-            <button className="px-4 py-2 rounded border" onClick={() => setStep(1)}>
-              Back
-            </button>
-            <button
-              className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-              onClick={() => setStep(3)}
-              disabled={!canGoNextFromStep2}
-            >
-              Next
-            </button>
+          {/* Preview */}
+          {scopes && Object.keys(scopes).length > 0 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold">Preview — Extracted Scopes</h3>
+                <Button
+                  variant="outline"
+                  onClick={() => exportAllTradesToXLSX(scopes, formData.projectName || 'Project')}
+                >
+                  Export All Trades (XLSX)
+                </Button>
+              </div>
+
+              {Object.entries(scopes).map(([trade, items]) => (
+                <div key={trade} className="rounded-2xl border p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="font-semibold">{trade} — {items.length} items</h4>
+                    <Button size="sm" onClick={() => exportTradeToXLSX(trade, items)}>
+                      Export {trade}
+                    </Button>
+                  </div>
+                  {items.length === 0 ? (
+                    <p className="text-sm text-gray-500">No items detected for this trade.</p>
+                  ) : (
+                    <ul className="mt-1 list-disc pl-5 text-sm">
+                      {items.slice(0, 12).map((it, idx) => (
+                        <li key={`${trade}-${idx}`}>
+                          <span className="font-medium">{it.item}</span>
+                          {it.qty !== '' ? ` — Qty: ${it.qty}` : ''}
+                          {it.sheet ? ` — ${it.sheet}` : ''}
+                          {it.notes ? ` — ${it.notes}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-between">
+            <Button variant="ghost" onClick={handleBack}>Back</Button>
+            <Button variant="secondary" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+              Back to Top
+            </Button>
           </div>
-        </div>
-      )}
-
-      {/* STEP 3 */}
-      {step === 3 && (
-        <div className="rounded border p-4">
-          <h2 className="font-medium mb-3">3) Parse & Export</h2>
-          <p className="text-sm mb-4">
-            This will analyze your PDF for the selected trades and create a scope list per
-            trade. Results are saved in Firestore under{" "}
-            <code>projects/&lt;id&gt;/scopes/&lt;trade&gt;</code>.
-          </p>
-
-          <div className="flex items-center gap-3">
-            <button
-              className="px-4 py-2 rounded bg-black text-white disabled:opacity-50"
-              onClick={handleParse}
-              disabled={parseDisabled}
-            >
-              {busy ? "Parsing…" : "Parse Plans"}
-            </button>
-
-            {status && <span className="text-sm text-gray-700">{status}</span>}
-          </div>
-
-          <div className="mt-4">
-            <button className="px-4 py-2 rounded border" onClick={() => setStep(2)}>
-              Back
-            </button>
-          </div>
-        </div>
+        </section>
       )}
     </div>
-  );
+  )
+}
+
+/* ——— UI Subcomponents ——— */
+
+function StepDot({ active, label }: { active: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`h-3 w-3 rounded-full ${active ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+      <span className={`text-xs ${active ? 'font-medium' : 'opacity-60'}`}>{label}</span>
+    </div>
+  )
+}
+
+function InputField(props: {
+  label: string
+  name: string
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  type?: string
+  error?: string
+}) {
+  const { label, name, value, onChange, type = 'text', error } = props
+  return (
+    <div className="space-y-1">
+      <label className="text-sm font-medium" htmlFor={name}>{label}</label>
+      <input
+        id={name}
+        name={name}
+        type={type}
+        value={value}
+        onChange={onChange}
+        className="w-full rounded-xl border px-3 py-2 text-sm"
+      />
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
+  )
+}
+
+function TextAreaField(props: {
+  label: string
+  name: string
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void
+  error?: string
+}) {
+  const { label, name, value, onChange, error } = props
+  return (
+    <div className="space-y-1 md:col-span-2">
+      <label className="text-sm font-medium" htmlFor={name}>{label}</label>
+      <textarea
+        id={name}
+        name={name}
+        value={value}
+        onChange={onChange}
+        rows={3}
+        className="w-full rounded-xl border px-3 py-2 text-sm"
+      />
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
+  )
+}
+
+function SelectField(props: {
+  label: string
+  name: string
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void
+  options: string[]
+  error?: string
+}) {
+  const { label, name, value, onChange, options, error } = props
+  return (
+    <div className="space-y-1">
+      <label className="text-sm font-medium" htmlFor={name}>{label}</label>
+      <select
+        id={name}
+        name={name}
+        value={value}
+        onChange={onChange}
+        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
+      >
+        <option value="">Select…</option>
+        {options.map((op) => (
+          <option key={op} value={op}>{op}</option>
+        ))}
+      </select>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+    </div>
+  )
 }
