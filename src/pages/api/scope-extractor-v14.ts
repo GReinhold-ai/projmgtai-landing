@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.5.0: Image-page detection + vision extraction for scanned drawings
-// v14.5.0: Multi-detail page splitting, Retail Trellis room+type
+// v14.5.1: Image-page detection + vision extraction for scanned drawings
+// v14.5.1: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -222,6 +222,26 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/First\s*Floor\s*Plan/i, "First Floor", 10],
     [/Floor\s*Plan/i, "First Floor", 8],
     
+    // Golf/Country Club & Hospitality patterns (score 10)
+    [/Lounge\s*(?:Bar|&|Area)/i, "Lounge Bar & Fireplace", 10],
+    [/Bar\s*(?:&|and)\s*Fireplace/i, "Lounge Bar & Fireplace", 10],
+    [/Fireplace\s*(?:Cabinet|Wall|Surround)/i, "Lounge Bar & Fireplace", 10],
+    [/Pre[\s-]*function/i, "Pre-function", 10],
+    [/Banquet\s*(?:Room|Hall)?/i, "Banquet Room", 10],
+    [/Wine\s*(?:Display|Cabinet|Cellar|Room|Bar)/i, "Wine Display", 10],
+    [/Preserve\s*Display/i, "Preserve Display Case", 10],
+    [/Display\s*Case/i, "Display Case", 10],
+    [/(?:Wood|Slat)\s*Screen/i, "Screen", 10],
+    [/Meeting\s*Room/i, "Meeting Room", 10],
+    [/Board\s*Room/i, "Board Room", 10],
+    [/Pro\s*Shop/i, "Pro Shop", 10],
+    [/(?:Men|Women|Unisex)?\s*Locker\s*Room/i, "Locker Room", 10],
+    [/Back\s*Bar/i, "Back Bar", 10],
+    [/Host(?:ess)?\s*(?:Stand|Station|Desk)/i, "Host Stand", 10],
+    [/Coat\s*(?:Room|Check|Closet)/i, "Coat Room", 10],
+    [/Pantry/i, "Pantry", 10],
+    [/Butler/i, "Butler Pantry", 10],
+
     // Medium specificity (score 5)
     [/\bLocker/i, "Team Members", 5],
     [/\bVanit(?:y|ies)\b/i, "Vanity Details", 5],
@@ -235,13 +255,22 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/\bFitness\b/i, "Fitness Area", 5],
     [/\bStereo\b/i, "Service Manager", 5],
     [/\bAV\s*Equip/i, "Service Manager", 5],
+    [/\bLounge\b/i, "Lounge", 5],
+    [/\bBar\b(?!\s*(?:code|chart))/i, "Bar", 5],
+    [/\bFireplace\b/i, "Fireplace", 5],
+    [/\bWine\b/i, "Wine Display", 5],
+    [/\bPantry\b/i, "Pantry", 5],
+    [/\bBanquet\b/i, "Banquet Room", 5],
   ];
 
-  // Sheet reference patterns — "T3.12" "A7.15" etc. in title block
+  // Sheet reference patterns — "T3.12" "A7.15" "A-403" "A-507" etc. in title block
   const sheetRefRe = /([AT]\d+[.\-]\d+)\s*[-–—:]\s*(.+)/gi;
 
   // Multi-detail detection: pages with multiple "ENLARGED X PLAN" or "X DETAIL" headings
-  const detailHeadingRe = /ENLARGED\s+([A-Z][A-Z\s']+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION)/gi;
+  const detailHeadingRe = /(?:ENLARGED|INTERIOR|CASEWORK|MILLWORK|CABINET)\s+([A-Z][A-Z\s'&/]+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION|VIEW)/gi;
+
+  // Also detect room names after common architectural prefixes
+  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-–—:]\s*(.+)/gi;
 
   const roomMap = new Map<string, number[]>();
 
@@ -258,6 +287,13 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     const sheetCheck = new RegExp(sheetRefRe.source, sheetRefRe.flags);
     while ((sm = sheetCheck.exec(page.text)) !== null) {
       sheetRefs.push(sm[2].trim());
+    }
+    
+    // Check for architectural title patterns (INTERIOR ELEVATIONS - LOUNGE BAR, etc.)
+    const archCheck = new RegExp(archTitleRe.source, archTitleRe.flags);
+    let am;
+    while ((am = archCheck.exec(page.text)) !== null) {
+      sheetRefs.push(am[1].trim());
     }
 
     // Detect multi-detail pages: extract all detail headings
@@ -345,7 +381,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.5.0, an expert architectural millwork estimator
+You are ScopeExtractor v14.5.1, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -938,7 +974,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.5.0] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.5.1] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -976,13 +1012,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.5.0] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.5.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.5.0", mode: "analyze",
+        ok: true, version: "v14.5.1", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -1007,10 +1043,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
-    // v14.5.0: Extract sheet number & detail references from OCR text
+    // v14.5.1: Extract sheet number & detail references from OCR text
     const sheetInfo = extractSheetDetails(combinedText);
     if (sheetInfo.sheetNumber) {
-      console.log(`[v14.5.0] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+      console.log(`[v14.5.1] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
@@ -1019,7 +1055,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.5.0: Build image list for vision extraction (image-only pages)
+    // v14.5.1: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -1029,7 +1065,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.5.0] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.5.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -1057,10 +1093,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.5.0: ALWAYS override room to the API-provided roomName.
+    // v14.5.1: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
     
-    // v14.5.0: Auto-assign sheet_ref from extracted sheet/detail info
+    // v14.5.1: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
       for (const row of cleanedRows) {
         if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
@@ -1069,7 +1105,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.0: Reclassify scope_exclusions that are actually millwork
+    // v14.5.1: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -1093,7 +1129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.0: Postprocess material code assignment from hints (with error safety)
+    // v14.5.1: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1163,10 +1199,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.5.0] material assign error:", e); }
+    } catch (e) { console.error("[v14.5.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.5.0", mode: "extract",
+      ok: true, version: "v14.5.1", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1183,7 +1219,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.5.0] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.5.0", error: err?.message || "Unknown error" });
+    console.error("[v14.5.1] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.5.1", error: err?.message || "Unknown error" });
   }
 }
