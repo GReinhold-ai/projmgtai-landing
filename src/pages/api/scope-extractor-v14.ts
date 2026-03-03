@@ -1,8 +1,8 @@
 // src/pages/api/scope-extractor-v14.ts
 // V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
-// v14.5.4: Image-page detection + vision extraction for scanned drawings
-// v14.5.4: Multi-detail page splitting, Retail Trellis room+type
+// v14.5.5: Image-page detection + vision extraction for scanned drawings
+// v14.5.5: Multi-detail page splitting, Retail Trellis room+type
 // v14.3.1 FIXES (on top of v14.3):
 //   - TOON sanitization: detect comma-embedded TOON data in descriptions
 //   - Column shift repair: detect description in item_type field, re-map columns
@@ -209,7 +209,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     if (hasMill) millworkCount++;
     if (hasSpec && !hasMill) specCount++;
   }
-  console.log(`[v14.5.4] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
+  console.log(`[v14.5.5] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
 
   // Room patterns with specificity scores (higher = more specific = wins ties)
   const titlePatterns: [RegExp, string, number][] = [
@@ -394,7 +394,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.5.4, an expert architectural millwork estimator
+You are ScopeExtractor v14.5.5, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -682,16 +682,6 @@ function buildUserPrompt(
   parts.push(ocrText);
   parts.push('"""');
   parts.push("");
-  
-  // Guidance for text-heavy pages that may be specs/notes rather than drawings
-  if (!isImageBased && textChars > 3000) {
-    parts.push("NOTE: This text is dense — it may include specification pages, code notes,");
-    parts.push("or general notes mixed with millwork content. Focus ONLY on content that");
-    parts.push("describes physical millwork items (cabinets, countertops, shelves, panels,");
-    parts.push("trim, hardware). Skip code compliance text, ADA requirements, general notes,");
-    parts.push("and demolition notes unless they describe specific millwork items.");
-    parts.push("");
-  }
   
   parts.push(`Output ONLY valid TOON with this exact header:`);
   parts.push(HEADER_V14);
@@ -998,7 +988,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.5.4] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.5.5] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -1036,13 +1026,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.5.4] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.5.5] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.5.4", mode: "analyze",
+        ok: true, version: "v14.5.5", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -1067,10 +1057,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
-    // v14.5.4: Extract sheet number & detail references from OCR text
+    // v14.5.5: Extract sheet number & detail references from OCR text
     const sheetInfo = extractSheetDetails(combinedText);
     if (sheetInfo.sheetNumber) {
-      console.log(`[v14.5.4] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+      console.log(`[v14.5.5] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
@@ -1079,7 +1069,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.5.4: Build image list for vision extraction (image-only pages)
+    // v14.5.5: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -1089,7 +1079,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.5.4] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.5.5] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -1117,10 +1107,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.5.4: ALWAYS override room to the API-provided roomName.
+    // v14.5.5: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
     
-    // v14.5.4: Auto-assign sheet_ref from extracted sheet/detail info
+    // v14.5.5: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
       for (const row of cleanedRows) {
         if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
@@ -1129,7 +1119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.4: Reclassify scope_exclusions that are actually millwork
+    // v14.5.5: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -1153,7 +1143,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.5.4: Postprocess material code assignment from hints (with error safety)
+    // v14.5.5: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1223,10 +1213,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.5.4] material assign error:", e); }
+    } catch (e) { console.error("[v14.5.5] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.5.4", mode: "extract",
+      ok: true, version: "v14.5.5", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1243,7 +1233,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.5.4] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.5.4", error: err?.message || "Unknown error" });
+    console.error("[v14.5.5] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.5.5", error: err?.message || "Unknown error" });
   }
 }
