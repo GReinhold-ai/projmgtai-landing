@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.5.5 — Client-driven room-by-room extraction
+// ProjMgtAI v14.6.0 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -343,7 +343,7 @@ export default function HomePage() {
     // Tab 1: Project Summary — with project info header
     const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.5.5"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.6.0"], [],
     ];
     // Project info block (like Coto De Casa proposal header)
     if (pi.projectName) sum.push(["Project:", pi.projectName]);
@@ -538,11 +538,103 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(wb, ws, tabName);
     }
 
-    // Warnings tab
-    const wd: any[][] = [["WARNINGS"], []];
-    if (!warnings.length) wd.push(["No warnings."]);
-    else for (const w of warnings) wd.push([w]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wd), "Warnings");
+    // ─── RFI Tab — Auto-generated from extraction gaps ───────────
+    const rfis: any[][] = [
+      ["RFI #", "Priority", "Category", "Room", "Description", "Reference", "Status"],
+    ];
+    let rfiNum = 0;
+    const addRfi = (priority: string, category: string, room: string, desc: string, ref: string) => {
+      rfiNum++;
+      rfis.push([`RFI-${String(rfiNum).padStart(3, "0")}`, priority, category, room, desc, ref, "Open"]);
+    };
+
+    // 1. Rooms with 0 items — likely missing scope
+    for (const r of roomResults) {
+      if ((r.itemCount || 0) === 0 && r.status === "ok" && r.room !== "Unclassified") {
+        addRfi("High", "Missing Scope",
+          r.room,
+          `Room detected but 0 millwork items extracted. Verify casework scope exists for ${r.room}. Check interior elevation sheets for this room.`,
+          (r as any).sheetInfo?.sheetNumber || "No sheet ref");
+      }
+    }
+
+    // 2. Scope exclusions — confirm by others
+    for (const row of rows) {
+      if (row.item_type === "scope_exclusion") {
+        addRfi("Medium", "Scope Exclusion",
+          row.room || "Unclassified",
+          `"${(row.description || "").substring(0, 80)}" — Confirm this item is by others / NIC. Verify responsible party.`,
+          row.sheet_ref || "");
+      }
+    }
+
+    // 3. Items missing dimensions
+    const itemsMissingDims = rows.filter((r: any) =>
+      r.item_type !== "scope_exclusion" && r.item_type !== "assembly" &&
+      !r.width_mm && !r.depth_mm && !r.height_mm
+    );
+    // Group by room to avoid flooding
+    const dimGapRooms: Record<string, string[]> = {};
+    for (const r of itemsMissingDims) {
+      const room = r.room || "Unclassified";
+      if (!dimGapRooms[room]) dimGapRooms[room] = [];
+      dimGapRooms[room].push(r.description?.substring(0, 40) || r.item_type);
+    }
+    for (const [room, items] of Object.entries(dimGapRooms)) {
+      addRfi("Medium", "Missing Dimensions",
+        room,
+        `${items.length} item(s) missing dimensions: ${items.slice(0, 3).join("; ")}${items.length > 3 ? ` (+${items.length - 3} more)` : ""}. Field verify or obtain from detail sheets.`,
+        "");
+    }
+
+    // 4. Items missing material codes
+    const itemsMissingMat = rows.filter((r: any) =>
+      r.item_type !== "scope_exclusion" && r.item_type !== "assembly" &&
+      r.item_type !== "concealed_hinge" && !r.material_code
+    );
+    const matGapRooms: Record<string, string[]> = {};
+    for (const r of itemsMissingMat) {
+      const room = r.room || "Unclassified";
+      if (!matGapRooms[room]) matGapRooms[room] = [];
+      matGapRooms[room].push(r.description?.substring(0, 40) || r.item_type);
+    }
+    for (const [room, items] of Object.entries(matGapRooms)) {
+      addRfi("Low", "Missing Material",
+        room,
+        `${items.length} item(s) missing material specification: ${items.slice(0, 3).join("; ")}${items.length > 3 ? ` (+${items.length - 3} more)` : ""}. Confirm finish and material per spec.`,
+        "");
+    }
+
+    // 5. Rooms with no sheet reference
+    for (const r of roomResults) {
+      const si = (r as any).sheetInfo;
+      if ((r.itemCount || 0) > 0 && (!si?.sheetNumber)) {
+        addRfi("Low", "Sheet Reference",
+          r.room,
+          `No sheet number identified for ${r.room}. Provide detail/elevation sheet reference for cross-check.`,
+          "");
+      }
+    }
+
+    // 6. Merge warnings (from extraction) — keep as informational RFIs
+    for (const w of warnings) {
+      addRfi("Info", "Extraction Note",
+        (w.match(/\[([^\]]+)\]/)?.[1]) || "",
+        w.replace(/\[[^\]]+\]\s*/, ""),
+        "");
+    }
+
+    const wsRfi = XLSX.utils.aoa_to_sheet(rfis);
+    wsRfi["!cols"] = [
+      { wch: 10 }, // RFI #
+      { wch: 8 },  // Priority
+      { wch: 20 }, // Category
+      { wch: 25 }, // Room
+      { wch: 70 }, // Description
+      { wch: 12 }, // Reference
+      { wch: 8 },  // Status
+    ];
+    XLSX.utils.book_append_sheet(wb, wsRfi, "RFIs");
 
     return new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -577,13 +669,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.5.5 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.6.0 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.5.5 — Improved room detection & dimension extraction
+          ★ v14.6.0 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -635,7 +727,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1455_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1460_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
