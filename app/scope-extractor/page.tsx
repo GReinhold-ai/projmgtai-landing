@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.6.0 — Client-driven room-by-room extraction
+// ProjMgtAI v14.7.0 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -343,7 +343,7 @@ export default function HomePage() {
     // Tab 1: Project Summary — with project info header
     const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.6.0"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.7.0"], [],
     ];
     // Project info block (like Coto De Casa proposal header)
     if (pi.projectName) sum.push(["Project:", pi.projectName]);
@@ -384,6 +384,56 @@ export default function HomePage() {
     ws1["!cols"] = [{ wch: 25 }, { wch: 20 }, { wch: 25 }, { wch: 20 }, { wch: 15 }];
     XLSX.utils.book_append_sheet(wb, ws1, "Project Summary");
 
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT B: TRADE CLASSIFIER — Confidence scoring & rule tagging
+    // ═══════════════════════════════════════════════════════════════
+    const classifyItem = (r: any): { confidence: string; rule: string } => {
+      const type = (r.item_type || "").toLowerCase();
+      const desc = (r.description || "").toLowerCase();
+      const hasDims = !!(r.width_mm || r.depth_mm || r.height_mm);
+      const hasMat = !!r.material_code;
+      const hasHw = !!(r.hardware_spec || r.hardware_type);
+
+      // Rule-based classification with traceability
+      if (type === "scope_exclusion") {
+        if (/by\s*others|nic|not\s*in/i.test(desc)) return { confidence: "high", rule: "RULE_explicit_exclusion" };
+        if (/mirror|tv|monitor|light/i.test(desc)) return { confidence: "high", rule: "RULE_fixture_exclusion" };
+        return { confidence: "medium", rule: "LLM_exclusion" };
+      }
+      if (type === "assembly") {
+        return { confidence: "high", rule: "RULE_assembly_rollup" };
+      }
+
+      // Millwork items — score based on evidence
+      let score = 0;
+      let ruleTag = "LLM_classify";
+
+      // Dimensional evidence
+      if (hasDims) { score += 30; ruleTag = "RULE_has_dimensions"; }
+      // Material evidence
+      if (hasMat) { score += 25; ruleTag = hasDims ? "RULE_dims_and_material" : "RULE_has_material"; }
+      // Hardware evidence
+      if (hasHw) score += 10;
+      // Type-specific confidence boosts
+      if (/cabinet/i.test(type) && hasDims) { score += 20; ruleTag = "RULE_cabinet_with_dims"; }
+      if (/countertop|transaction/i.test(type) && hasMat) { score += 20; ruleTag = "RULE_countertop_with_mat"; }
+      if (/hinge|grommet/i.test(type)) { score += 15; ruleTag = "RULE_hardware_item"; }
+      if (/trim|channel|rubber/i.test(type)) { score += 10; ruleTag = hasMat ? "RULE_trim_with_mat" : "RULE_trim_generic"; }
+      // Description quality
+      if (desc.length > 20) score += 10;
+      if (/\d+['"]\s*[-x×]/i.test(desc)) score += 15; // embedded dimensions in description
+
+      const confidence = score >= 60 ? "high" : score >= 30 ? "medium" : "low";
+      return { confidence, rule: ruleTag };
+    };
+
+    // Apply classification to all rows
+    for (const r of rows) {
+      const { confidence, rule } = classifyItem(r);
+      if (!r.confidence || r.confidence === "") r.confidence = confidence;
+      r.classification_rule = rule;
+    }
+
     // Tab 2: All Items — dual-unit dimensions (mm + ft-in)
     const mmToFtIn = (mm: any): string => {
       if (!mm || isNaN(Number(mm)) || Number(mm) <= 0) return "";
@@ -410,7 +460,7 @@ export default function HomePage() {
 
     const hdrs = ["#", "Room", "Type", "Description", "Section", "Qty", "Unit",
       "W(mm)", "D(mm)", "H(mm)", "W(ft-in)", "D(ft-in)", "H(ft-in)",
-      "Material Code", "Material", "Detail", "Sheet",  "Hardware", "Confidence", "Notes"];
+      "Material Code", "Material", "Detail", "Sheet", "Hardware", "Confidence", "Rule", "Notes"];
     const allData = [hdrs];
     rows.forEach((r: any, i: number) => {
       // Detail column: per-item detail ref from sheet_ref field (e.g. "4A/A8.10" → "4A")
@@ -469,12 +519,13 @@ export default function HomePage() {
         sheetNum,
         r.hardware_spec || r.hardware_type || "",
         r.confidence || "",
+        r.classification_rule || "",
         r.notes || ""
       ]);
     });
     const ws2 = XLSX.utils.aoa_to_sheet(allData);
     ws2["!cols"] = [{wch:5},{wch:20},{wch:18},{wch:45},{wch:8},{wch:5},{wch:5},
-      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:10},{wch:10},{wch:30},{wch:10},{wch:40}];
+      {wch:9},{wch:9},{wch:9},{wch:10},{wch:10},{wch:10},{wch:12},{wch:30},{wch:10},{wch:10},{wch:30},{wch:10},{wch:22},{wch:40}];
     XLSX.utils.book_append_sheet(wb, ws2, "All Items");
 
     // Per-room tabs
@@ -528,6 +579,7 @@ export default function HomePage() {
           sheetNum,
           r.hardware_spec || r.hardware_type || "",
           r.confidence || "",
+          r.classification_rule || "",
           r.notes || ""
         ]);
       });
@@ -537,6 +589,202 @@ export default function HomePage() {
       const tabName = rn.substring(0, 31).replace(/[\\/*?[\]:]/g, "");
       XLSX.utils.book_append_sheet(wb, ws, tabName);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT D: BID CHECKLIST — "Don't miss" items per room
+    // ═══════════════════════════════════════════════════════════════
+    const checklist: any[][] = [
+      ["#", "Room", "Category", "Check Item", "Status", "Found", "Notes"],
+    ];
+    let checkNum = 0;
+    const addCheck = (room: string, category: string, item: string, status: string, found: string, notes: string) => {
+      checkNum++;
+      checklist.push([checkNum, room, category, item, status, found, notes]);
+    };
+
+    // Build room item maps for checklist analysis
+    const roomItemMap: Record<string, any[]> = {};
+    for (const r of rows) {
+      const room = r.room || "Unclassified";
+      if (!roomItemMap[room]) roomItemMap[room] = [];
+      roomItemMap[room].push(r);
+    }
+
+    for (const [room, items] of Object.entries(roomItemMap)) {
+      const millItems = items.filter((r: any) => r.item_type !== "scope_exclusion" && r.item_type !== "assembly");
+      const types = new Set(millItems.map((r: any) => r.item_type));
+      const mats = new Set(millItems.map((r: any) => r.material_code).filter(Boolean));
+      const hasHardware = millItems.some((r: any) => r.hardware_spec || r.hardware_type);
+      const hasDims = millItems.some((r: any) => r.width_mm || r.depth_mm || r.height_mm);
+      const cabinets = millItems.filter((r: any) => /cabinet/i.test(r.item_type || ""));
+      const countertops = millItems.filter((r: any) => r.item_type === "countertop" || r.item_type === "transaction_top");
+      const shelves = millItems.filter((r: any) => /shelf/i.test(r.item_type || ""));
+      const panels = millItems.filter((r: any) => /panel|trim|substrate/i.test(r.item_type || ""));
+
+      // Blocking / substrate check
+      const hasSubstrate = types.has("substrate");
+      if (cabinets.length > 0 && !hasSubstrate) {
+        addCheck(room, "Blocking", "Plywood substrate/blocking for cabinet mounting", "VERIFY", "Not found", "Cabinets present — confirm blocking scope");
+      } else if (hasSubstrate) {
+        addCheck(room, "Blocking", "Plywood substrate/blocking", "OK", "Yes", "");
+      }
+
+      // Hardware check
+      const hinges = millItems.filter((r: any) => /hinge/i.test(r.item_type || ""));
+      if (cabinets.length > 0) {
+        if (hinges.length > 0 || hasHardware) {
+          addCheck(room, "Hardware", `Cabinet hardware (${hinges.length} hinge items found)`, "OK", "Yes", "Verify hinge type and qty per door");
+        } else {
+          addCheck(room, "Hardware", "Cabinet hardware (hinges, pulls, locks)", "MISSING", "Not found", `${cabinets.length} cabinet(s) — no hardware specified`);
+        }
+      }
+
+      // Drawer hardware
+      const drawers = millItems.filter((r: any) => /drawer/i.test(r.item_type || ""));
+      if (drawers.length > 0) {
+        addCheck(room, "Hardware", `Drawer slides (${drawers.length} drawer items)`, "VERIFY", "", "Confirm slide type: full extension / soft close");
+      }
+
+      // Adjustable shelf pins/standards
+      if (shelves.length > 0) {
+        addCheck(room, "Hardware", `Shelf supports (${shelves.length} shelf items)`, "VERIFY", "", "Confirm: pins, standards, or fixed cleats");
+      }
+
+      // Countertop edge detail
+      if (countertops.length > 0) {
+        addCheck(room, "Finish", `Countertop edge profile (${countertops.length} top items)`, "VERIFY", "", "Confirm edge detail: eased, beveled, bullnose, waterfall");
+      }
+
+      // Material/finish completeness
+      const itemsNoMat = millItems.filter((r: any) => !r.material_code);
+      if (itemsNoMat.length > 0 && millItems.length > 0) {
+        const pct = Math.round((1 - itemsNoMat.length / millItems.length) * 100);
+        addCheck(room, "Finish", `Material specs (${pct}% complete)`,
+          pct >= 80 ? "OK" : "VERIFY",
+          `${millItems.length - itemsNoMat.length}/${millItems.length} items`,
+          itemsNoMat.length > 0 ? `Missing: ${itemsNoMat.slice(0,2).map((r:any) => r.item_type).join(", ")}` : "");
+      }
+
+      // Dimensions completeness
+      const itemsNoDims = millItems.filter((r: any) => !r.width_mm && !r.depth_mm && !r.height_mm);
+      if (millItems.length > 0) {
+        const pct = Math.round((1 - itemsNoDims.length / millItems.length) * 100);
+        addCheck(room, "Dimensions", `Field dimensions (${pct}% complete)`,
+          pct >= 60 ? "OK" : "VERIFY",
+          `${millItems.length - itemsNoDims.length}/${millItems.length} items`,
+          pct < 60 ? "Field verify critical dimensions before fabrication" : "");
+      }
+
+      // ADA compliance (vanity/reception rooms)
+      if (/vanit|restroom|reception|ada/i.test(room)) {
+        addCheck(room, "ADA", "ADA knee clearance (27\" min under counter)", "VERIFY", "", "Confirm 27\" knee height, 8\" toe depth per ADA 306");
+        if (/vanit|restroom/i.test(room)) {
+          addCheck(room, "ADA", "ADA mirror mounting height (40\" max to bottom)", "VERIFY", "", "Confirm mirror height per ADA 603.3");
+        }
+      }
+
+      // Scope exclusions confirmation
+      const exclusions = items.filter((r: any) => r.item_type === "scope_exclusion");
+      if (exclusions.length > 0) {
+        addCheck(room, "Exclusions", `${exclusions.length} scope exclusion(s)`, "VERIFY", "",
+          exclusions.slice(0, 2).map((r: any) => (r.description || "").substring(0, 30)).join("; "));
+      }
+    }
+
+    const wsCheck = XLSX.utils.aoa_to_sheet(checklist);
+    wsCheck["!cols"] = [
+      { wch: 5 }, { wch: 25 }, { wch: 14 }, { wch: 55 }, { wch: 9 }, { wch: 12 }, { wch: 50 },
+    ];
+    XLSX.utils.book_append_sheet(wb, wsCheck, "Bid Checklist");
+
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT C: WBS SUMMARY — Trade → Component → Location rollups
+    // ═══════════════════════════════════════════════════════════════
+    const wbs: any[][] = [
+      ["WBS #", "Level", "Trade / Component", "Room", "Qty", "Unit", "Total W (ft-in)", "Material", "Notes"],
+    ];
+    let wbsNum = 0;
+
+    // Group items by trade category
+    const tradeMap: Record<string, Record<string, any[]>> = {};
+    const getTradeCategory = (itemType: string): string => {
+      if (/cabinet|drawer|file_drawer|rollout|trash_drawer/i.test(itemType)) return "Cabinetry";
+      if (/countertop|transaction_top/i.test(itemType)) return "Countertops";
+      if (/shelf/i.test(itemType)) return "Shelving";
+      if (/panel|substrate|trellis/i.test(itemType)) return "Panels & Substrates";
+      if (/trim|channel|rubber_base|corner/i.test(itemType)) return "Trim & Molding";
+      if (/hinge|grommet/i.test(itemType)) return "Hardware";
+      if (/cutout|j_box|conduit/i.test(itemType)) return "Cutouts & Electrical";
+      if (/scope_exclusion/i.test(itemType)) return "Exclusions";
+      if (/assembly/i.test(itemType)) return "Assemblies";
+      return "Other";
+    };
+
+    for (const r of rows) {
+      const trade = getTradeCategory(r.item_type || "");
+      const room = r.room || "Unclassified";
+      if (!tradeMap[trade]) tradeMap[trade] = {};
+      if (!tradeMap[trade][room]) tradeMap[trade][room] = [];
+      tradeMap[trade][room].push(r);
+    }
+
+    // Sort trades by priority
+    const tradePriority: Record<string, number> = {
+      "Cabinetry": 1, "Countertops": 2, "Shelving": 3, "Panels & Substrates": 4,
+      "Trim & Molding": 5, "Hardware": 6, "Cutouts & Electrical": 7, "Assemblies": 8,
+      "Exclusions": 9, "Other": 10,
+    };
+    const sortedTrades = Object.keys(tradeMap).sort((a, b) => (tradePriority[a] || 99) - (tradePriority[b] || 99));
+
+    for (const trade of sortedTrades) {
+      const rooms = tradeMap[trade];
+      let tradeQty = 0;
+      let tradeTotalWidthMm = 0;
+      const tradeMats = new Set<string>();
+
+      // Trade header row
+      wbsNum++;
+      const tradeWbsNum = wbsNum;
+      const tradeRowIdx = wbs.length;
+      wbs.push([`${wbsNum}`, "Trade", trade, "", 0, "", "", "", ""]);
+
+      for (const [room, items] of Object.entries(rooms).sort((a, b) => a[0].localeCompare(b[0]))) {
+        const roomQty = items.reduce((s: number, r: any) => s + (Number(r.qty) || 1), 0);
+        const roomWidthMm = items.reduce((s: number, r: any) => s + (Number(r.width_mm) || 0), 0);
+        const roomMats = [...new Set(items.map((r: any) => r.material_code).filter(Boolean))];
+        tradeQty += roomQty;
+        tradeTotalWidthMm += roomWidthMm;
+        roomMats.forEach(m => tradeMats.add(m));
+
+        wbsNum++;
+        wbs.push([
+          `${tradeWbsNum}.${wbsNum - tradeWbsNum}`, "Room",
+          `${items.length} ${trade.toLowerCase()} item(s)`,
+          room, roomQty, "EA",
+          roomWidthMm > 0 ? mmToFtIn(roomWidthMm) : "",
+          roomMats.join(", "),
+          items.filter((r:any) => r.item_type !== "assembly").map((r:any) => r.item_type).join(", "),
+        ]);
+      }
+
+      // Update trade header with totals
+      wbs[tradeRowIdx][4] = tradeQty;
+      wbs[tradeRowIdx][7] = [...tradeMats].join(", ");
+      wbs[tradeRowIdx][8] = `${Object.keys(rooms).length} room(s)`;
+    }
+
+    // Summary row
+    wbs.push([]);
+    const totalMill = rows.filter((r:any) => r.item_type !== "scope_exclusion" && r.item_type !== "assembly").length;
+    const totalExcl = rows.filter((r:any) => r.item_type === "scope_exclusion").length;
+    wbs.push(["", "", "TOTAL", "", rows.length, "", "", "", `${totalMill} millwork + ${totalExcl} exclusions`]);
+
+    const wsWbs = XLSX.utils.aoa_to_sheet(wbs);
+    wsWbs["!cols"] = [
+      { wch: 8 }, { wch: 8 }, { wch: 35 }, { wch: 28 }, { wch: 6 }, { wch: 5 },
+      { wch: 14 }, { wch: 20 }, { wch: 45 },
+    ];
+    XLSX.utils.book_append_sheet(wb, wsWbs, "WBS Summary");
 
     // ─── RFI Tab — Auto-generated from extraction gaps ───────────
     const rfis: any[][] = [
@@ -669,13 +917,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.6.0 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.7.0 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.6.0 — Improved room detection & dimension extraction
+          ★ v14.7.0 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -727,7 +975,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1460_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1470_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
