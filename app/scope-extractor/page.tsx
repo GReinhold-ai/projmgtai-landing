@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.7.1 — Client-driven room-by-room extraction
+// ProjMgtAI v14.7.2 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -233,6 +233,31 @@ export default function HomePage() {
     const XLSX = await loadSheetJS();
     const wb = XLSX.utils.book_new();
 
+    // ─── Item Re-routing — Gender-specific vanity/locker items ───
+    // Items with "Women's" or "Men's" in description may land in wrong room
+    // (e.g., "Women's Wet Vanity" extracted under Mens Vanity because shared page)
+    // Re-route based on description keywords
+    const roomSet = new Set(rows.map((r: any) => r.room));
+    for (const r of rows) {
+      const desc = (r.description || "").toLowerCase();
+      const currentRoom = (r.room || "").toLowerCase();
+      
+      // Women's items in a men's room → Womens Vanity
+      if (/women['']?s?\b/i.test(r.description) && /\b(?:vanit|wet|dry|lavator|counter)/i.test(desc)) {
+        if (/men/i.test(currentRoom) && !/women/i.test(currentRoom)) {
+          r.room = "Womens Vanity";
+        }
+      }
+      // Men's items in a team/general room → Mens Vanity (if vanity-related)
+      if (/\bmen['']?s?\s*(?:wet|dry|vanit)/i.test(desc) && !/men/i.test(currentRoom)) {
+        r.room = "Mens Vanity";
+      }
+      // Women's items in a team/general room → Womens Vanity
+      if (/\bwomen['']?s?\s*(?:wet|dry|vanit)/i.test(desc) && !/women/i.test(currentRoom)) {
+        r.room = "Womens Vanity";
+      }
+    }
+
     // ─── Assembly Enrichment ───────────────────────────────────
     // For each assembly row, compute overall dims + summary from child items in same room
     const VALID_ITEM_TYPES_SET = new Set([
@@ -343,7 +368,7 @@ export default function HomePage() {
     // Tab 1: Project Summary — with project info header
     const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.7.1"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.7.2"], [],
     ];
     // Project info block (like Coto De Casa proposal header)
     if (pi.projectName) sum.push(["Project:", pi.projectName]);
@@ -929,13 +954,13 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.7.1 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.7.2 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.7.1 — Improved room detection & dimension extraction
+          ★ v14.7.2 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
@@ -987,7 +1012,7 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1471_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1472_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
