@@ -1,5 +1,5 @@
 // src/app/page.tsx
-// ProjMgtAI v14.7.3 — Client-driven room-by-room extraction
+// ProjMgtAI v14.8.0 — Client-driven room-by-room extraction
 // v14.3 FIXES: improved Excel column mapping, room progress display
 "use client";
 
@@ -7,11 +7,12 @@ import { useState, useRef, useCallback } from "react";
 import Script from "next/script";
 
 type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "done" | "error";
+type FileEntry = { file: File; type: "plans" | "specs" | "addenda" | "shop_drawings"; };
 
 declare global { interface Window { pdfjsLib: any; XLSX: any; } }
 
 export default function HomePage() {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<FileEntry[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -20,26 +21,44 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Auto-detect file type from filename
+  const detectFileType = (name: string): FileEntry["type"] => {
+    const n = name.toLowerCase();
+    if (/spec|division|section/i.test(n)) return "specs";
+    if (/addend|delta|revision|rev\d|asi/i.test(n)) return "addenda";
+    if (/shop|submitt|detail/i.test(n)) return "shop_drawings";
+    return "plans";
+  };
+
+  const addFiles = (newFiles: File[]) => {
+    const pdfs = newFiles.filter(f => f.type === "application/pdf");
+    if (pdfs.length === 0) { setError("Please select PDF files."); return; }
+    const totalSize = [...files.map(f => f.file), ...pdfs].reduce((s, f) => s + f.size, 0);
+    if (totalSize > 150 * 1024 * 1024) {
+      setError("Total file size exceeds 150MB. Try reducing the number of files.");
+      return;
+    }
+    const entries: FileEntry[] = pdfs.map(f => ({ file: f, type: detectFileType(f.name) }));
+    setFiles(prev => [...prev, ...entries]);
+    setError("");
+  };
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const d = e.dataTransfer.files[0];
-    if (d?.type === "application/pdf") { setFile(d); setError(""); }
-    else setError("Please drop a PDF file.");
-  }, []);
+    addFiles(Array.from(e.dataTransfer.files));
+  }, [files]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      const sizeMB = f.size / (1024 * 1024);
-      if (sizeMB > 100) {
-        setError("File is " + sizeMB.toFixed(0) + "MB — max recommended is 100MB. Try splitting into smaller sets.");
-        return;
-      }
-      if (sizeMB > 50) {
-        setProgress("Large file (" + sizeMB.toFixed(0) + "MB) — processing may take longer.");
-      }
-      setFile(f); setError("");
-    }
+    if (e.target.files) addFiles(Array.from(e.target.files));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeFile = (idx: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const changeFileType = (idx: number, newType: FileEntry["type"]) => {
+    setFiles(prev => prev.map((f, i) => i === idx ? { ...f, type: newType } : f));
   };
 
   async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
@@ -85,29 +104,56 @@ export default function HomePage() {
   }
 
   const handleExtract = async () => {
-    if (!file || !pdfReady) return;
-    setStatus("reading"); setProgress("Extracting text from PDF..."); setError("");
+    if (files.length === 0 || !pdfReady) return;
+    setStatus("reading"); setProgress("Extracting text from PDFs..."); setError("");
     setResultUrl(null); setStats(null);
 
     try {
-      // Step 1: Extract PDF text + detect image pages
-      const { text: pdfText, pageCount, imagePages } = await extractTextFromPdf(file);
-      const imagePageNums = Object.keys(imagePages).map(Number);
-      if (imagePageNums.length > 0) {
-        setProgress(`Found ${imagePageNums.length} image-only page(s): ${imagePageNums.join(", ")} — will use vision`);
-        await new Promise(r => setTimeout(r, 1000)); // brief pause so user sees the message
+      // Step 1: Extract text from ALL PDFs with source tags
+      let combinedText = "";
+      let totalPageCount = 0;
+      let allImagePages: Record<number, string> = {};
+      const sourceMap: string[] = []; // track which file each page came from
+
+      for (let fi = 0; fi < files.length; fi++) {
+        const entry = files[fi];
+        setProgress(`Reading file ${fi + 1}/${files.length}: ${entry.file.name} [${entry.type}]...`);
+        const { text, pageCount, imagePages } = await extractTextFromPdf(entry.file);
+
+        // Re-tag pages with global numbering and source type
+        const pageTexts = text.split(/--- PAGE \d+ ---/).filter(Boolean);
+        for (let p = 0; p < pageTexts.length; p++) {
+          const globalPage = totalPageCount + p + 1;
+          combinedText += `--- PAGE ${globalPage} [${entry.type.toUpperCase()}] ---\n${pageTexts[p]}\n\n`;
+          sourceMap.push(`${entry.file.name} [${entry.type}]`);
+        }
+
+        // Re-number image pages to global page numbers
+        for (const [pn, b64] of Object.entries(imagePages)) {
+          allImagePages[totalPageCount + parseInt(pn)] = b64;
+        }
+
+        totalPageCount += pageCount;
       }
-      if (!pdfText || pdfText.trim().length < 10)
-        throw new Error("Could not extract text. This may be a scanned PDF.");
 
-      // Step 2: Analyze — get room groupings + project context
+      const imagePageNums = Object.keys(allImagePages).map(Number);
+      if (imagePageNums.length > 0) {
+        setProgress(`Found ${imagePageNums.length} image-only page(s) across ${files.length} file(s) — will use vision`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!combinedText || combinedText.trim().length < 10)
+        throw new Error("Could not extract text from any PDF.");
+
+      // Step 2: Analyze — get room groupings + project context (combined across all files)
       setStatus("analyzing");
-      setProgress(`Analyzing ${pageCount} pages — detecting rooms & material legend...`);
+      setProgress(`Analyzing ${totalPageCount} pages from ${files.length} file(s) — detecting rooms & material legend...`);
 
+      const projectName = files.find(f => f.type === "plans")?.file.name?.replace(".pdf", "") || files[0].file.name.replace(".pdf", "");
+      
       const analyzeRes = await fetch("/api/scope-extractor-v14", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: pdfText, projectId: file.name.replace(".pdf", ""), mode: "analyze" }),
+        body: JSON.stringify({ text: combinedText, projectId: projectName, mode: "analyze" }),
       });
       if (!analyzeRes.ok) {
         const e = await analyzeRes.json().catch(() => ({}));
@@ -118,6 +164,8 @@ export default function HomePage() {
 
       const rooms = analysis.rooms || [];
       const projectContext = analysis.projectContext || {};
+      // Tag source files into project context
+      projectContext.sourceFiles = files.map(f => ({ name: f.file.name, type: f.type, pages: 0 }));
 
       // Step 3: Extract room by room
       setStatus("extracting");
@@ -136,15 +184,15 @@ export default function HomePage() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              text: pdfText,
-              projectId: file.name.replace(".pdf", ""),
+              text: combinedText,
+              projectId: projectName,
               mode: "extract",
               roomName: room.roomName,
               roomPages: room.pageNums,
               projectContext: projectContext,
               // Include base64 images for any image-only pages in this room
               pageImages: room.pageNums.reduce((acc: Record<number, string>, pn: number) => {
-                if (imagePages[pn]) acc[pn] = imagePages[pn];
+                if (allImagePages[pn]) acc[pn] = allImagePages[pn];
                 return acc;
               }, {}),
             }),
@@ -209,16 +257,17 @@ export default function HomePage() {
       setProgress("Building Excel workbook...");
 
       const finalStats = {
-        pageCount, roomCount: rooms.length, totalItems: allRows.length,
+        pageCount: totalPageCount, roomCount: rooms.length, totalItems: allRows.length,
         withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
         withMaterials: allRows.filter((r: any) => r.material_code || r.material).length,
         materialLegendCount: projectContext.materialLegend?.length || 0,
         documentType: projectContext.documentType || "unknown",
         roomResults,
+        fileCount: files.length,
       };
       setStats(finalStats);
 
-      const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
+      const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, projectName + ".pdf");
       setResultUrl(URL.createObjectURL(blob));
       setStatus("done"); setProgress("");
     } catch (err: any) {
@@ -368,7 +417,7 @@ export default function HomePage() {
     // Tab 1: Project Summary — with project info header
     const pi = projectContext.projectInfo || {};
     const sum: any[][] = [
-      ["MILLWORK SHOP ORDER — ProjMgtAI v14.7.3"], [],
+      ["MILLWORK SHOP ORDER — ProjMgtAI v14.8.0"], [],
     ];
     // Project info block (like Coto De Casa proposal header)
     if (pi.projectName) sum.push(["Project:", pi.projectName]);
@@ -379,6 +428,14 @@ export default function HomePage() {
     if (pi.planSet) sum.push(["Plan Set:", pi.planSet]);
     if (pi.planDate) sum.push(["Plan Date:", pi.planDate]);
     sum.push(["Document Type:", projectContext.documentType || "unknown"]);
+    if (projectContext.sourceFiles?.length > 1) {
+      sum.push([]);
+      sum.push(["SOURCE FILES"]);
+      sum.push(["File", "Type"]);
+      for (const sf of projectContext.sourceFiles) {
+        sum.push([sf.name, sf.type]);
+      }
+    }
     sum.push([]);
     sum.push(["SCOPE SUMMARY"]);
     sum.push(["Pages:", stats.pageCount]);
@@ -937,7 +994,7 @@ export default function HomePage() {
   }
 
   const reset = () => {
-    setFile(null); setStatus("idle"); setProgress(""); setError("");
+    setFiles([]); setStatus("idle"); setProgress(""); setError("");
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     setResultUrl(null); setStats(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -954,21 +1011,21 @@ export default function HomePage() {
           <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
         </div>
         <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.7.3 Live
+          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.8.0 Live
         </span>
       </nav>
 
       <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
         <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          ★ v14.7.3 — Improved room detection & dimension extraction
+          ★ v14.8.0 — Improved room detection & dimension extraction
         </div>
         <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
           Full project takeoff,<br/>
           <span style={{ background:"linear-gradient(135deg,#22d3ee,#6366f1,#a855f7)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>every room, one upload.</span>
         </h1>
         <p style={{ fontSize:15, maxWidth:500, margin:"0 auto 36px", lineHeight:1.6, opacity:0.7 }}>
-          Upload multi-page plan PDFs. AI groups pages by room, resolves material specs
-          across sheets, then extracts each room with manufacturer part numbers.
+          Upload plans, specs, and addenda together. AI merges material legends,
+          groups pages by room, then extracts each room with manufacturer part numbers.
         </p>
       </section>
 
@@ -976,20 +1033,32 @@ export default function HomePage() {
         <div style={{ maxWidth:560, margin:"0 auto", background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:16, padding:32 }}>
           {status === "idle" && (<>
             <div onDrop={handleDrop} onDragOver={e => e.preventDefault()} onClick={() => fileInputRef.current?.click()}
-              style={{ border:"2px dashed rgba(34,211,238,0.3)", borderRadius:12, padding:"48px 24px", cursor:"pointer", marginBottom: file ? 16 : 0 }}>
+              style={{ border:"2px dashed rgba(34,211,238,0.3)", borderRadius:12, padding:"48px 24px", cursor:"pointer", marginBottom: files.length ? 16 : 0 }}>
               <div style={{ fontSize:32, marginBottom:12 }}>📎</div>
-              <div style={{ fontSize:14, color:"#22d3ee", fontWeight:600 }}>Drop a PDF here <span style={{ opacity:0.5, color:"#e2e8f0", fontWeight:400 }}>or click to browse</span></div>
-              <div style={{ fontSize:12, opacity:0.4, marginTop:8 }}>Multi-page plan sets supported</div>
+              <div style={{ fontSize:14, color:"#22d3ee", fontWeight:600 }}>Drop PDFs here <span style={{ opacity:0.5, color:"#e2e8f0", fontWeight:400 }}>or click to browse</span></div>
+              <div style={{ fontSize:12, opacity:0.4, marginTop:8 }}>Plans, specs, addenda — upload multiple files</div>
             </div>
-            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display:"none" }} />
-            {file && (<div style={{ marginTop:16 }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 16px", background:"rgba(34,211,238,0.08)", borderRadius:8, marginBottom:16 }}>
-                <span style={{ fontSize:13 }}>📄 {file.name} <span style={{ opacity:0.5 }}>({(file.size/1024).toFixed(0)} KB)</span></span>
-                <button onClick={e => { e.stopPropagation(); reset(); }} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13 }}>✕</button>
+            <input ref={fileInputRef} type="file" accept=".pdf" multiple onChange={handleFileSelect} style={{ display:"none" }} />
+            {files.length > 0 && (<div style={{ marginTop:16 }}>
+              {files.map((entry, idx) => (
+                <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", background:"rgba(34,211,238,0.06)", borderRadius:8, marginBottom:6, fontSize:13 }}>
+                  <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>📄 {entry.file.name} <span style={{ opacity:0.4 }}>({(entry.file.size/1024).toFixed(0)}KB)</span></span>
+                  <select value={entry.type} onChange={e => changeFileType(idx, e.target.value as FileEntry["type"])}
+                    style={{ background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.15)", borderRadius:6, color:"#e2e8f0", padding:"4px 8px", fontSize:12, cursor:"pointer" }}>
+                    <option value="plans">Plans</option>
+                    <option value="specs">Specs</option>
+                    <option value="addenda">Addenda</option>
+                    <option value="shop_drawings">Shop Drawings</option>
+                  </select>
+                  <button onClick={() => removeFile(idx)} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13, padding:"2px 6px" }}>✕</button>
+                </div>
+              ))}
+              <div style={{ fontSize:12, opacity:0.4, marginTop:8, marginBottom:12 }}>
+                {files.length} file(s) · {(files.reduce((s, f) => s + f.file.size, 0) / (1024*1024)).toFixed(1)}MB total
               </div>
               <button onClick={handleExtract} disabled={!pdfReady}
                 style={{ width:"100%", padding:"14px", background: pdfReady ? "linear-gradient(135deg,#22d3ee,#6366f1)" : "rgba(255,255,255,0.1)", color:"#0a0e1a", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor: pdfReady?"pointer":"wait", fontFamily:"inherit" }}>
-                {pdfReady ? "Extract All Rooms →" : "Loading PDF engine..."}
+                {pdfReady ? `Extract All Rooms (${files.length} file${files.length > 1 ? "s" : ""}) →` : "Loading PDF engine..."}
               </button>
             </div>)}
           </>)}
@@ -1008,11 +1077,11 @@ export default function HomePage() {
               <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Extraction Complete</div>
               {stats && (
                 <div style={{ fontSize:12, opacity:0.6, marginBottom:20, lineHeight:1.8 }}>
-                  {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
+                  {stats.fileCount > 1 && `${stats.fileCount} files · `}{stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1473_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v1480_${(files[0]?.file?.name || "project").replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
                 ⬇ Download Excel
               </a><br/>
