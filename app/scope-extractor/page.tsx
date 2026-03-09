@@ -315,7 +315,7 @@ export default function HomePage() {
       "piano_hinge","grommet","adjustable_shelf","fixed_shelf","cpu_shelf","drawer",
       "file_drawer","trash_drawer","rollout_basket","conduit","j_box","equipment_cutout",
       "safe_cabinet","controls_cabinet","end_panel","corner_guard","corner_detail",
-      "stainless_panel","hanger_support","trellis","scope_exclusion",
+      "stainless_panel","hanger_support","ada_fascia","wall_cap","trellis","scope_exclusion",
     ]);
     const enrichAssemblies = (items: any[]) => {
       const roomItems: Record<string, any[]> = {};
@@ -374,14 +374,15 @@ export default function HomePage() {
           piano_hinge: "hinge", concealed_hinge: "hinge",
           equipment_cutout: "equip. cutout", hanger_support: "support",
           cpu_shelf: "CPU shelf", rollout_basket: "rollout basket",
+          ada_fascia: "ADA fascia panel", wall_cap: "wall cap",
         };
         // Sort by priority then count desc
         const typePriority: Record<string, number> = {
           base_cabinet: 1, upper_cabinet: 1, tall_cabinet: 1, countertop: 2,
-          transaction_top: 2, decorative_panel: 3, trim: 4, channel: 4,
+          transaction_top: 2, decorative_panel: 3, ada_fascia: 3, trim: 4, channel: 4,
           fixed_shelf: 5, adjustable_shelf: 5, cpu_shelf: 5,
           drawer: 5, file_drawer: 5, trash_drawer: 5, safe_cabinet: 5,
-          rubber_base: 6, substrate: 6, conduit: 7, j_box: 7,
+          rubber_base: 6, substrate: 6, wall_cap: 6, conduit: 7, j_box: 7,
           grommet: 8, concealed_hinge: 8, piano_hinge: 8, hanger_support: 8,
           equipment_cutout: 7, rollout_basket: 5,
         };
@@ -805,6 +806,8 @@ export default function HomePage() {
       if (/cabinet|drawer|file_drawer|rollout|trash_drawer/i.test(itemType)) return "Cabinetry";
       if (/countertop|transaction_top/i.test(itemType)) return "Countertops";
       if (/shelf/i.test(itemType)) return "Shelving";
+      if (/ada_fascia/i.test(itemType)) return "ADA & Locker Millwork";
+      if (/wall_cap/i.test(itemType)) return "Trim & Molding";
       if (/panel|substrate|trellis/i.test(itemType)) return "Panels & Substrates";
       if (/trim|channel|rubber_base|corner/i.test(itemType)) return "Trim & Molding";
       if (/hinge|grommet/i.test(itemType)) return "Hardware";
@@ -825,8 +828,8 @@ export default function HomePage() {
     // Sort trades by priority
     const tradePriority: Record<string, number> = {
       "Cabinetry": 1, "Countertops": 2, "Shelving": 3, "Panels & Substrates": 4,
-      "Trim & Molding": 5, "Hardware": 6, "Cutouts & Electrical": 7, "Assemblies": 8,
-      "Exclusions": 9, "Other": 10,
+      "ADA & Locker Millwork": 5, "Trim & Molding": 6, "Hardware": 7,
+      "Cutouts & Electrical": 8, "Assemblies": 9, "Exclusions": 10, "Other": 11,
     };
     const sortedTrades = Object.keys(tradeMap).sort((a, b) => (tradePriority[a] || 99) - (tradePriority[b] || 99));
 
