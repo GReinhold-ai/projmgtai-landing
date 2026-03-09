@@ -1,5 +1,15 @@
 // src/pages/api/scope-extractor-v14.ts
-// V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
+// V14.8.2 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
+//
+// v14.8.2 FIXES:
+//   - [Service Manager] Room-specific extraction hints injected into user prompt
+//     for gym manager/team-room and pre-function room types — forces full office
+//     build-out extraction (uppers, bases, shelves, file drawers, locks)
+//   - [Pre-function] Expanded arch title regex + bareElevRe catches more title formats
+//     Cross-sheet association pass: Unclassified pages sharing sheet numbers with
+//     a known room get reassigned to that room (fixes elevation-only detail sheets)
+//   - [LLM variability] Replaced vague "WHAT TO EXTRACT" with exhaustive item-type
+//     checklist + mandatory 5-point self-check before output
 //
 // v14.8.1: Image-page detection + vision extraction for scanned drawings
 // v14.8.1: Multi-detail page splitting, Retail Trellis room+type
@@ -209,7 +219,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     if (hasMill) millworkCount++;
     if (hasSpec && !hasMill) specCount++;
   }
-  console.log(`[v14.8.1] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
+  console.log(`[v14.8.2] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
 
   // Room patterns with specificity scores (higher = more specific = wins ties)
   const titlePatterns: [RegExp, string, number][] = [
@@ -282,10 +292,15 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
   // Multi-detail detection: pages with multiple "ENLARGED X PLAN" or "X DETAIL" headings
   const detailHeadingRe = /(?:ENLARGED|INTERIOR|CASEWORK|MILLWORK|CABINET)\s+([A-Z][A-Z\s'&/]+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION|VIEW)/gi;
 
-  // Also detect room names after common architectural prefixes
-  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-–—:]\s*(.+)/gi;
+  // Detect room names after common architectural title prefixes
+  // Expanded to catch more formats: bare "ELEVATIONS - ROOM", "DETAILS - ROOM", etc.
+  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?|REFLECTED\s+CEILING\s+PLANS?|EQUIPMENT\s+PLANS?|FURNITURE\s+PLANS?)\s*[-–—:]\s*(.+)/gi;
+  const bareElevRe = /^[\s]*(?:ELEVATIONS?|DETAILS?|SECTIONS?)\s*[-–—:]\s*([A-Z][A-Z\s'&/,]{2,40})/gim;
 
   const roomMap = new Map<string, number[]>();
+  // Cross-sheet association: track sheet numbers that contain each room's name
+  // so we can later pull in elevation pages that reference those sheets
+  const roomSheetMap = new Map<string, Set<string>>(); // roomName → Set<sheetNum>
 
   for (const page of pages) {
     // Extract title zone: first and last 600 chars
@@ -298,8 +313,11 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     const sheetRefs: string[] = [];
     let sm;
     const sheetCheck = new RegExp(sheetRefRe.source, sheetRefRe.flags);
+    // Also collect raw sheet numbers for cross-sheet tracking
+    const rawSheetNums: string[] = [];
     while ((sm = sheetCheck.exec(page.text)) !== null) {
       sheetRefs.push(sm[2].trim());
+      rawSheetNums.push(sm[1].trim());
     }
     
     // Check for architectural title patterns (INTERIOR ELEVATIONS - LOUNGE BAR, etc.)
@@ -307,6 +325,13 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     let am;
     while ((am = archCheck.exec(page.text)) !== null) {
       sheetRefs.push(am[1].trim());
+    }
+
+    // Also check bare "ELEVATIONS - ROOM" patterns
+    const bareCheck = new RegExp(bareElevRe.source, bareElevRe.flags);
+    let bm;
+    while ((bm = bareCheck.exec(page.text)) !== null) {
+      sheetRefs.push(bm[1].trim());
     }
 
     // Detect multi-detail pages: extract all detail headings
@@ -379,7 +404,59 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
     if (!roomMap.has(bestRoom)) roomMap.set(bestRoom, []);
     roomMap.get(bestRoom)!.push(page.pageNum);
+
+    // Cross-sheet tracking: if this page is assigned to a real room and has sheet numbers,
+    // record those sheet numbers so we can later pull in elevation pages referencing them
+    if (bestRoom !== "Unclassified" && rawSheetNums.length > 0) {
+      if (!roomSheetMap.has(bestRoom)) roomSheetMap.set(bestRoom, new Set());
+      for (const sn of rawSheetNums) roomSheetMap.get(bestRoom)!.add(sn);
+    }
   }
+
+  // ── Cross-sheet association pass ──────────────────────────────────────────
+  // For each page that is currently "Unclassified", check if it references a
+  // sheet number that was seen on a known room's floor-plan/legend page.
+  // This fixes Pre-function (and similar rooms) where the room name only appears
+  // on the floor plan while the casework details are on sheets like A-403.
+  const unclassifiedPages = [...(roomMap.get("Unclassified") || [])];
+  for (const pageNum of unclassifiedPages) {
+    const page = pages.find(p => p.pageNum === pageNum);
+    if (!page) continue;
+
+    // Collect all sheet numbers referenced on this unclassified page
+    const pageSheets = new Set<string>();
+    const sc2 = new RegExp(sheetRefRe.source, sheetRefRe.flags);
+    let sm2;
+    while ((sm2 = sc2.exec(page.text)) !== null) pageSheets.add(sm2[1].trim());
+    // Also pick up standalone sheet references: "A-403", "A7.15" etc.
+    const standaloneSheets = page.text.match(/\b([AT]\d+[.\-]\d+)\b/g) || [];
+    for (const s of standaloneSheets) pageSheets.add(s);
+
+    if (pageSheets.size === 0) continue;
+
+    // Check if any known room owns one of these sheet numbers
+    let foundRoom: string | null = null;
+    for (const [room, sheetSet] of roomSheetMap) {
+      for (const s of pageSheets) {
+        if (sheetSet.has(s)) { foundRoom = room; break; }
+      }
+      if (foundRoom) break;
+    }
+
+    if (foundRoom) {
+      // Reassign from Unclassified to the matched room
+      const unclassPages = roomMap.get("Unclassified")!;
+      const idx2 = unclassPages.indexOf(pageNum);
+      if (idx2 !== -1) unclassPages.splice(idx2, 1);
+      if (!roomMap.has(foundRoom)) roomMap.set(foundRoom, []);
+      if (!roomMap.get(foundRoom)!.includes(pageNum)) {
+        roomMap.get(foundRoom)!.push(pageNum);
+      }
+      console.log(`[v14.8.2] Cross-sheet: page ${pageNum} reassigned from Unclassified → ${foundRoom}`);
+    }
+  }
+  // Clean up empty Unclassified entry
+  if ((roomMap.get("Unclassified") || []).length === 0) roomMap.delete("Unclassified");
 
   const rooms: RoomInfo[] = [];
   let idx = 0;
@@ -394,7 +471,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.8.1, an expert architectural millwork estimator
+You are ScopeExtractor v14.8.2, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -509,9 +586,32 @@ SHOP DRAWING MODE ACTIVE:
 
   p += `
 
-WHAT TO EXTRACT: cabinets, countertops, panels, trim, hardware, equipment cutouts,
-substrates, conduit/electrical by millwork fab, scope exclusions (NIC/by others).
-WHAT NOT TO EXTRACT: items by G.C., electrical, plumbing, flooring, paint.
+EXHAUSTIVE EXTRACTION — CRITICAL:
+You are a licensed estimator preparing a bid. EVERY millwork item visible in the text
+or drawings MUST appear as a row. Omitting items costs money. When in doubt, include it.
+
+WHAT TO EXTRACT (every instance of these):
+- Base cabinets, upper/wall cabinets, tall cabinets — each distinct section = one row
+- Countertops and transaction tops — each run or shape = one row
+- Drawers, file drawers, rollout baskets — if called out separately from cabinet
+- Adjustable shelves, fixed shelves, wall-hung shelves — each shelf unit = one row
+- End panels, decorative panels, FRP/3Form panels
+- Trim, rubber base, aluminum channel, corner guards
+- Equipment cutouts, J-boxes, conduit by millwork fab
+- Substrate, blocking, backing by millwork fab
+- Hardware groups (locks, hinges, grommets) if called out with quantity
+- Scope exclusions (NIC/by others) — these MUST be included even though not millwork
+
+WHAT NOT TO EXTRACT: items by G.C., electrical (not by millwork), plumbing, flooring, paint.
+
+SELF-CHECK BEFORE OUTPUT — MANDATORY:
+After drafting your TOON, mentally walk through each section/area of the room and verify:
+1. Did I capture ALL cabinet sections (base, upper, tall) listed or shown?
+2. Did I capture ALL countertops and transaction tops?
+3. Did I capture ALL shelves, drawers, and file drawers called out?
+4. Did I capture ALL locks, hinges, and hardware groups with quantities?
+5. Did I capture ALL scope exclusions ("By Others", "NIC", "By GC")?
+If you missed any, ADD them before outputting.
 
 Set confidence: "high" = type+dims+material, "medium" = missing one, "low" = missing two+.
 
@@ -627,6 +727,34 @@ function buildUserPrompt(
     parts.push(`Name: "${hints.assembly.name}" | Type: ${hints.assembly.type}`);
     parts.push(`Sections: ${hints.assembly.sections.join(", ") || "none found"}`);
     parts.push(`→ Create assembly_id="ASSY-001" and nest ALL components under it.`);
+    parts.push("");
+  }
+
+  // Room-specific extraction guidance
+  const roomLower = roomName.toLowerCase();
+  if (/service\s*manager|team\s*room|manager.*office|office.*manager/i.test(roomName)) {
+    parts.push("## ROOM TYPE: GYM MANAGER / TEAM OFFICE");
+    parts.push("This is a gym manager's office or team room with typical millwork scope:");
+    parts.push("  - Upper wall cabinets (often 5'-0\" wide, 12\" deep, with doors)");
+    parts.push("  - Base cabinets (matching width, 24\" deep, may include drawers)");
+    parts.push("  - Laminate countertop over bases");
+    parts.push("  - Wall shelves (open, fixed or adjustable)");
+    parts.push("  - File drawers (legal or letter, built into base cabs)");
+    parts.push("  - Locks on file drawers and cabinet doors — extract qty and spec");
+    parts.push("  - Stereo/AV equipment cabinet or enclosure (millwork, not AV gear)");
+    parts.push("CRITICAL: Extract ALL of the above even if dimensions are sparse.");
+    parts.push("Do NOT stop after finding only the AV/stereo cabinet — scan for the full office build-out.");
+    parts.push("");
+  } else if (/pre.?function|pre\s*func/i.test(roomName)) {
+    parts.push("## ROOM TYPE: PRE-FUNCTION / HOSPITALITY FOYER");
+    parts.push("Pre-function spaces have casework details on SEPARATE elevation sheets.");
+    parts.push("The OCR text may reference sheet numbers (e.g. A-403, A-507) where the actual");
+    parts.push("casework details live. Extract ALL millwork you can find in this text, including:");
+    parts.push("  - Display cases, built-in credenzas, host/concierge stations");
+    parts.push("  - Decorative panels, wainscot, millwork wall panels");
+    parts.push("  - Any casework referenced by sheet number — create a scope_exclusion row");
+    parts.push("    with description 'See Sheet [X] for casework details' so it appears in RFI.");
+    parts.push("If the OCR text is sparse, output what you can and flag as low confidence.");
     parts.push("");
   }
 
@@ -988,7 +1116,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.8.1] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.8.2] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -1026,13 +1154,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.8.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.8.2] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.8.1", mode: "analyze",
+        ok: true, version: "v14.8.2", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -1057,10 +1185,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
-    // v14.8.1: Extract sheet number & detail references from OCR text
+    // v14.8.2: Extract sheet number & detail references from OCR text
     const sheetInfo = extractSheetDetails(combinedText);
     if (sheetInfo.sheetNumber) {
-      console.log(`[v14.8.1] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+      console.log(`[v14.8.2] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
@@ -1069,7 +1197,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.8.1: Build image list for vision extraction (image-only pages)
+    // v14.8.2: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -1079,7 +1207,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.8.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.8.2] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -1107,10 +1235,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.8.1: ALWAYS override room to the API-provided roomName.
+    // v14.8.2: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
     
-    // v14.8.1: Auto-assign sheet_ref from extracted sheet/detail info
+    // v14.8.2: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
       for (const row of cleanedRows) {
         if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
@@ -1119,7 +1247,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.8.1: Reclassify scope_exclusions that are actually millwork
+    // v14.8.2: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -1143,7 +1271,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.8.1: Postprocess material code assignment from hints (with error safety)
+    // v14.8.2: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1213,10 +1341,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.8.1] material assign error:", e); }
+    } catch (e) { console.error("[v14.8.2] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.8.1", mode: "extract",
+      ok: true, version: "v14.8.2", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1233,7 +1361,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.8.1] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.8.1", error: err?.message || "Unknown error" });
+    console.error("[v14.8.2] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.8.2", error: err?.message || "Unknown error" });
   }
 }
