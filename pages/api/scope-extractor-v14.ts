@@ -1,15 +1,5 @@
 // src/pages/api/scope-extractor-v14.ts
-// V14.8.3 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
-//
-// v14.8.3 FIXES:
-//   - [Service Manager] Room-specific extraction hints injected into user prompt
-//     for gym manager/team-room and pre-function room types — forces full office
-//     build-out extraction (uppers, bases, shelves, file drawers, locks)
-//   - [Pre-function] Expanded arch title regex + bareElevRe catches more title formats
-//     Cross-sheet association pass: Unclassified pages sharing sheet numbers with
-//     a known room get reassigned to that room (fixes elevation-only detail sheets)
-//   - [LLM variability] Replaced vague "WHAT TO EXTRACT" with exhaustive item-type
-//     checklist + mandatory 5-point self-check before output
+// V14.4.1 Scope Extractor — Client-Driven Multi-Room Pipeline with Vision
 //
 // v14.8.1: Image-page detection + vision extraction for scanned drawings
 // v14.8.1: Multi-detail page splitting, Retail Trellis room+type
@@ -219,7 +209,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     if (hasMill) millworkCount++;
     if (hasSpec && !hasMill) specCount++;
   }
-  console.log(`[v14.8.3] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
+  console.log(`[v14.8.1] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
 
   // Room patterns with specificity scores (higher = more specific = wins ties)
   const titlePatterns: [RegExp, string, number][] = [
@@ -292,15 +282,10 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
   // Multi-detail detection: pages with multiple "ENLARGED X PLAN" or "X DETAIL" headings
   const detailHeadingRe = /(?:ENLARGED|INTERIOR|CASEWORK|MILLWORK|CABINET)\s+([A-Z][A-Z\s'&/]+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION|VIEW)/gi;
 
-  // Detect room names after common architectural title prefixes
-  // Expanded to catch more formats: bare "ELEVATIONS - ROOM", "DETAILS - ROOM", etc.
-  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?|REFLECTED\s+CEILING\s+PLANS?|EQUIPMENT\s+PLANS?|FURNITURE\s+PLANS?)\s*[-–—:]\s*(.+)/gi;
-  const bareElevRe = /^[\s]*(?:ELEVATIONS?|DETAILS?|SECTIONS?)\s*[-–—:]\s*([A-Z][A-Z\s'&/,]{2,40})/gim;
+  // Also detect room names after common architectural prefixes
+  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-–—:]\s*(.+)/gi;
 
   const roomMap = new Map<string, number[]>();
-  // Cross-sheet association: track sheet numbers that contain each room's name
-  // so we can later pull in elevation pages that reference those sheets
-  const roomSheetMap = new Map<string, Set<string>>(); // roomName → Set<sheetNum>
 
   for (const page of pages) {
     // Extract title zone: first and last 600 chars
@@ -313,11 +298,8 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     const sheetRefs: string[] = [];
     let sm;
     const sheetCheck = new RegExp(sheetRefRe.source, sheetRefRe.flags);
-    // Also collect raw sheet numbers for cross-sheet tracking
-    const rawSheetNums: string[] = [];
     while ((sm = sheetCheck.exec(page.text)) !== null) {
       sheetRefs.push(sm[2].trim());
-      rawSheetNums.push(sm[1].trim());
     }
     
     // Check for architectural title patterns (INTERIOR ELEVATIONS - LOUNGE BAR, etc.)
@@ -325,13 +307,6 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     let am;
     while ((am = archCheck.exec(page.text)) !== null) {
       sheetRefs.push(am[1].trim());
-    }
-
-    // Also check bare "ELEVATIONS - ROOM" patterns
-    const bareCheck = new RegExp(bareElevRe.source, bareElevRe.flags);
-    let bm;
-    while ((bm = bareCheck.exec(page.text)) !== null) {
-      sheetRefs.push(bm[1].trim());
     }
 
     // Detect multi-detail pages: extract all detail headings
@@ -404,59 +379,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
     if (!roomMap.has(bestRoom)) roomMap.set(bestRoom, []);
     roomMap.get(bestRoom)!.push(page.pageNum);
-
-    // Cross-sheet tracking: if this page is assigned to a real room and has sheet numbers,
-    // record those sheet numbers so we can later pull in elevation pages referencing them
-    if (bestRoom !== "Unclassified" && rawSheetNums.length > 0) {
-      if (!roomSheetMap.has(bestRoom)) roomSheetMap.set(bestRoom, new Set());
-      for (const sn of rawSheetNums) roomSheetMap.get(bestRoom)!.add(sn);
-    }
   }
-
-  // ── Cross-sheet association pass ──────────────────────────────────────────
-  // For each page that is currently "Unclassified", check if it references a
-  // sheet number that was seen on a known room's floor-plan/legend page.
-  // This fixes Pre-function (and similar rooms) where the room name only appears
-  // on the floor plan while the casework details are on sheets like A-403.
-  const unclassifiedPages = [...(roomMap.get("Unclassified") || [])];
-  for (const pageNum of unclassifiedPages) {
-    const page = pages.find(p => p.pageNum === pageNum);
-    if (!page) continue;
-
-    // Collect all sheet numbers referenced on this unclassified page
-    const pageSheets = new Set<string>();
-    const sc2 = new RegExp(sheetRefRe.source, sheetRefRe.flags);
-    let sm2;
-    while ((sm2 = sc2.exec(page.text)) !== null) pageSheets.add(sm2[1].trim());
-    // Also pick up standalone sheet references: "A-403", "A7.15" etc.
-    const standaloneSheets = page.text.match(/\b([AT]\d+[.\-]\d+)\b/g) || [];
-    for (const s of standaloneSheets) pageSheets.add(s);
-
-    if (pageSheets.size === 0) continue;
-
-    // Check if any known room owns one of these sheet numbers
-    let foundRoom: string | null = null;
-    for (const [room, sheetSet] of roomSheetMap) {
-      for (const s of pageSheets) {
-        if (sheetSet.has(s)) { foundRoom = room; break; }
-      }
-      if (foundRoom) break;
-    }
-
-    if (foundRoom) {
-      // Reassign from Unclassified to the matched room
-      const unclassPages = roomMap.get("Unclassified")!;
-      const idx2 = unclassPages.indexOf(pageNum);
-      if (idx2 !== -1) unclassPages.splice(idx2, 1);
-      if (!roomMap.has(foundRoom)) roomMap.set(foundRoom, []);
-      if (!roomMap.get(foundRoom)!.includes(pageNum)) {
-        roomMap.get(foundRoom)!.push(pageNum);
-      }
-      console.log(`[v14.8.3] Cross-sheet: page ${pageNum} reassigned from Unclassified → ${foundRoom}`);
-    }
-  }
-  // Clean up empty Unclassified entry
-  if ((roomMap.get("Unclassified") || []).length === 0) roomMap.delete("Unclassified");
 
   const rooms: RoomInfo[] = [];
   let idx = 0;
@@ -471,7 +394,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.8.3, an expert architectural millwork estimator
+You are ScopeExtractor v14.8.1, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
@@ -526,16 +449,7 @@ transaction_top, decorative_panel, trim, channel, rubber_base, substrate, concea
 piano_hinge, grommet, adjustable_shelf, fixed_shelf, cpu_shelf, drawer, file_drawer,
 trash_drawer, rollout_basket, conduit, j_box, equipment_cutout, safe_cabinet,
 controls_cabinet, end_panel, corner_guard, corner_detail, stainless_panel, hanger_support,
-ada_fascia, wall_cap, trellis, scope_exclusion
-
-ADA FASCIA / LOCKER ROOM PANELS — CRITICAL:
-- ada_fascia: ADA-compliant fascia panels at locker room bases, sink skirts, vanity skirts
-  Examples: "18' ADA Fascia Panels and Supports", "Sink counter skirts", "ADA fascia at locker base"
-  These are millwork items — NEVER mark as scope_exclusion.
-  Width = run length in LF (18'-0" = 5486mm). Extract supports as separate substrate rows.
-- wall_cap: wall cap trim, top cap on wall panels, laminate wall cap strips
-  Examples: "13LF Wall Cap", "Laminate Wall Cap", "Cap trim at top of panels"
-  Unit = LF. Width = total linear feet.
+trellis, scope_exclusion
 
 DIMENSION RULES — CRITICAL:
 - Use dimensions from PRE-EXTRACTED HINTS. Match to items by context.
@@ -546,15 +460,6 @@ DIMENSION RULES — CRITICAL:
 - dim_source: "extracted" | "calculated" | "unknown"
 - ALWAYS check the PRE-EXTRACTED DIMENSIONS section — these are reliable regex matches from the OCR.
   Map them to the correct items by reading the surrounding context.
-
-CABINET RUN DIMENSIONS — CRITICAL:
-- When a plan calls out a total run (e.g. "5'-0\" UPPERS", "7' BASE CABS", "10'-0\" OPEN UPPER"):
-  Assign that TOTAL RUN dimension as the W(width) of that cabinet row.
-  Do NOT assign a single door/section width (e.g. 1'-0" per door) as the row width.
-- Example: "5'-0\" UPPER CABINETS" → upper_cabinet row W=1524mm, NOT W=305mm
-- Example: "7' BASE CABINETS" → base_cabinet row W=2134mm, NOT W=610mm
-- If individual section widths are also shown (e.g. "3 doors @ 20\" each"), output one row
-  per section with its individual width, OR one row with the total width and qty=run/section.
 
 DIMENSION ASSIGNMENT (W/D/H):
 - W = WIDTH: the LONG horizontal dimension of the section front face (the run length).
@@ -604,32 +509,9 @@ SHOP DRAWING MODE ACTIVE:
 
   p += `
 
-EXHAUSTIVE EXTRACTION — CRITICAL:
-You are a licensed estimator preparing a bid. EVERY millwork item visible in the text
-or drawings MUST appear as a row. Omitting items costs money. When in doubt, include it.
-
-WHAT TO EXTRACT (every instance of these):
-- Base cabinets, upper/wall cabinets, tall cabinets — each distinct section = one row
-- Countertops and transaction tops — each run or shape = one row
-- Drawers, file drawers, rollout baskets — if called out separately from cabinet
-- Adjustable shelves, fixed shelves, wall-hung shelves — each shelf unit = one row
-- End panels, decorative panels, FRP/3Form panels
-- Trim, rubber base, aluminum channel, corner guards
-- Equipment cutouts, J-boxes, conduit by millwork fab
-- Substrate, blocking, backing by millwork fab
-- Hardware groups (locks, hinges, grommets) if called out with quantity
-- Scope exclusions (NIC/by others) — these MUST be included even though not millwork
-
-WHAT NOT TO EXTRACT: items by G.C., electrical (not by millwork), plumbing, flooring, paint.
-
-SELF-CHECK BEFORE OUTPUT — MANDATORY:
-After drafting your TOON, mentally walk through each section/area of the room and verify:
-1. Did I capture ALL cabinet sections (base, upper, tall) listed or shown?
-2. Did I capture ALL countertops and transaction tops?
-3. Did I capture ALL shelves, drawers, and file drawers called out?
-4. Did I capture ALL locks, hinges, and hardware groups with quantities?
-5. Did I capture ALL scope exclusions ("By Others", "NIC", "By GC")?
-If you missed any, ADD them before outputting.
+WHAT TO EXTRACT: cabinets, countertops, panels, trim, hardware, equipment cutouts,
+substrates, conduit/electrical by millwork fab, scope exclusions (NIC/by others).
+WHAT NOT TO EXTRACT: items by G.C., electrical, plumbing, flooring, paint.
 
 Set confidence: "high" = type+dims+material, "medium" = missing one, "low" = missing two+.
 
@@ -748,62 +630,6 @@ function buildUserPrompt(
     parts.push("");
   }
 
-  // Room-specific extraction guidance
-  const roomLower = roomName.toLowerCase();
-  if (/service\s*manager|manager.*office|office.*manager/i.test(roomName)) {
-    parts.push("## ROOM TYPE: GYM SERVICE MANAGER OFFICE");
-    parts.push("Typical NCC bid scope for this room:");
-    parts.push("  - Full-height (tall) cabinets — item_type=tall_cabinet, extract each with width");
-    parts.push("  - Upper wall cabinets (5'-0\" run typical) — item_type=upper_cabinet");
-    parts.push("  - Base cabinets (matching run, 24\" deep) — item_type=base_cabinet");
-    parts.push("  - Laminated countertop over bases — item_type=countertop");
-    parts.push("  - Wall-hung shelves with backboard — item_type=fixed_shelf, qty per plan");
-    parts.push("  - File drawers built into base cabs — item_type=file_drawer");
-    parts.push("  - Locks on file drawers + cabinet doors — item_type=concealed_hinge, extract qty");
-    parts.push("  - AV/stereo equipment cabinet (the millwork box, not the gear) — controls_cabinet");
-    parts.push("DIMENSION RULE: Assign the TOTAL run dimension to the cabinet row width.");
-    parts.push("  '5\\'-0\\\"' for uppers = W=1524mm for that row. Not a per-section width.");
-    parts.push("CRITICAL: Extract ALL items above. Do NOT stop after the AV cabinet.");
-    parts.push("");
-  } else if (/team\s*room/i.test(roomName)) {
-    parts.push("## ROOM TYPE: GYM TEAM ROOM");
-    parts.push("Typical NCC bid scope for this room:");
-    parts.push("  - Open upper cabinets (10'-0\" run typical) — item_type=upper_cabinet, W=3048mm");
-    parts.push("  - Base cabinets (7'-0\" run typical, 24\" deep) — item_type=base_cabinet, W=2134mm");
-    parts.push("  - Microwave shelf (fixed shelf at specific AFF) — item_type=fixed_shelf, note 'microwave shelf'");
-    parts.push("  - Drawers (3 typical) — item_type=drawer. Extract ALL — if 3 shown, qty=3 or 3 rows.");
-    parts.push("  - No-drip laminated countertop — item_type=countertop");
-    parts.push("  - Rubber base — item_type=rubber_base");
-    parts.push("DIMENSION RULE: Assign TOTAL run dimension to cabinet width field.");
-    parts.push("DRAWER COUNT: Do NOT default to qty=1. Count all drawers shown on plan.");
-    parts.push("");
-  } else if (/pre.?function|pre\s*func/i.test(roomName)) {
-    parts.push("## ROOM TYPE: PRE-FUNCTION / HOSPITALITY FOYER");
-    parts.push("Pre-function spaces have casework details on SEPARATE elevation sheets.");
-    parts.push("The OCR text may reference sheet numbers (e.g. A-403, A-507) where the actual");
-    parts.push("casework details live. Extract ALL millwork you can find in this text, including:");
-    parts.push("  - Display cases, built-in credenzas, host/concierge stations");
-    parts.push("  - Decorative panels, wainscot, millwork wall panels");
-    parts.push("  - Any casework referenced by sheet number — create a scope_exclusion row");
-    parts.push("    with description 'See Sheet [X] for casework details' so it appears in RFI.");
-    parts.push("If the OCR text is sparse, output what you can and flag as low confidence.");
-    parts.push("");
-  } else if (/locker|vanity|restroom|shower|men.*room|women.*room|unisex/i.test(roomName)) {
-    parts.push("## ROOM TYPE: LOCKER ROOM / VANITY / RESTROOM");
-    parts.push("These rooms contain ADA millwork items that MUST be extracted as millwork:");
-    parts.push("  - ADA fascia panels at locker bases — item_type=ada_fascia");
-    parts.push("    Width = total run in mm (e.g. 18'-0\" = 5486mm), unit=LF");
-    parts.push("    Description: 'ADA Fascia Panels and Supports' or similar");
-    parts.push("  - Sink/counter skirts — item_type=ada_fascia");
-    parts.push("  - Vanity base cabinets — item_type=base_cabinet");
-    parts.push("  - Stone or solid surface countertop — item_type=countertop");
-    parts.push("  - Plywood backing/substrate at walls — item_type=substrate");
-    parts.push("  - Wall cap trim — item_type=wall_cap, unit=LF");
-    parts.push("CRITICAL: ADA fascia panels ARE millwork — NEVER mark as scope_exclusion.");
-    parts.push("Fixtures (mirrors, dispensers, grab bars, toilet partitions) = scope_exclusion.");
-    parts.push("");
-  }
-
   parts.push(`## PRE-EXTRACTED DIMENSIONS (${hints.dimensions.length} found)`);
   for (const d of hints.dimensions.slice(0, 100)) {
     parts.push(`  Line ${d.line}: ${d.raw} = ${d.mm}mm | "${d.context}"`);
@@ -879,7 +705,7 @@ const VALID_ITEM_TYPES = new Set([
   "cpu_shelf", "drawer", "file_drawer", "trash_drawer", "rollout_basket",
   "conduit", "j_box", "equipment_cutout", "safe_cabinet", "controls_cabinet",
   "end_panel", "corner_guard", "corner_detail", "stainless_panel", "hanger_support",
-  "ada_fascia", "wall_cap", "trellis", "scope_exclusion",
+  "trellis", "scope_exclusion",
 ]);
 
 function sanitizeToon(toon: string): string {
@@ -951,27 +777,6 @@ function cleanupRows(rows: any[]): any[] {
       return row;
     }
     
-    // Pattern E: item_type is BLANK but description contains a valid item_type string
-    // This happens when the LLM outputs the type in the description column and leaves
-    // item_type empty — observed in Team Members locker rows where Club Resource Group
-    // items come back as: item_type="" description="tall_cabinet" qty=1 ...
-    if (!itemType) {
-      const desc = (row.description || "").trim();
-      if (VALID_ITEM_TYPES.has(desc)) {
-        // The real description is missing — use section_id or notes as fallback
-        const fallbackDesc = (row.section_id || row.notes || "").trim() || desc;
-        row.item_type = desc;
-        row.description = fallbackDesc !== desc ? fallbackDesc : "";
-        // Shift qty/unit from where they landed — if qty looks like a dimension, fix it
-        if (row.qty && !isNaN(Number(row.qty)) && Number(row.qty) > 100) {
-          row.width_mm = Number(row.qty);
-          row.qty = 1;
-        }
-        if (!row.qty || row.qty === desc) row.qty = 1;
-        if (!row.unit || VALID_ITEM_TYPES.has(row.unit)) row.unit = "EA";
-      }
-    }
-
     if (itemType && !VALID_ITEM_TYPES.has(itemType)) {
       
       // Pattern A: section_id has a valid item_type — fields shifted right by 2
@@ -1016,8 +821,6 @@ function cleanupRows(rows: any[]): any[] {
         else if (/assembly/i.test(descLower)) inferredType = "assembly";
         else if (/shower.*rod|rod/i.test(descLower)) inferredType = "scope_exclusion";
         else if (/printer|monitor|cctv|telephone|terminal|pos\b|scanner/i.test(descLower)) inferredType = "scope_exclusion";
-        else if (/ada.*fascia|fascia.*panel|locker.*skirt|sink.*skirt|counter.*skirt/i.test(descLower)) inferredType = "ada_fascia";
-        else if (/wall.*cap|cap.*trim|top.*cap/i.test(descLower)) inferredType = "wall_cap";
         
         row.item_type = inferredType;
         row.description = realDesc;
@@ -1061,8 +864,6 @@ function cleanupRows(rows: any[]): any[] {
           else if (/mirror/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/grab.*bar|soap.*dispenser|paper.*towel|hand.*dryer/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/trellis/i.test(combined)) row.item_type = "trellis";
-          else if (/ada.*fascia|fascia.*panel|locker.*skirt|sink.*skirt|counter.*skirt|vanity.*skirt/i.test(combined)) row.item_type = "ada_fascia";
-          else if (/wall.*cap|cap.*trim|top.*cap/i.test(combined)) row.item_type = "wall_cap";
           
           if (desc === row.room || !desc) {
             row.description = itemType;
@@ -1187,7 +988,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       if (is429 && attempt < 2) {
         const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.8.3] Rate limited, waiting ${wait/1000}s...`);
+        console.log(`[v14.8.1] Rate limited, waiting ${wait/1000}s...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
@@ -1225,13 +1026,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
-      console.log(`[v14.8.3] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
+      console.log(`[v14.8.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
       for (const r of rooms) {
         console.log(`  ${r.roomName}: pages ${r.pageNums.join(",")}`);
       }
 
       return res.status(200).json({
-        ok: true, version: "v14.8.3", mode: "analyze",
+        ok: true, version: "v14.8.1", mode: "analyze",
         projectContext: ctx,
         rooms: rooms,
         pageCount: pages.length,
@@ -1256,10 +1057,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const combinedText = roomPageTexts.map(p => `--- PAGE ${p.pageNum} ---\n${p.text}`).join("\n\n");
 
-    // v14.8.3: Extract sheet number & detail references from OCR text
+    // v14.8.1: Extract sheet number & detail references from OCR text
     const sheetInfo = extractSheetDetails(combinedText);
     if (sheetInfo.sheetNumber) {
-      console.log(`[v14.8.3] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
+      console.log(`[v14.8.1] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
     const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
@@ -1268,7 +1069,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const systemPrompt = buildSystemPrompt(ctx);
     const userPrompt = buildUserPrompt(combinedText, roomName, hints, ctx, projectId, sheetInfo);
 
-    // v14.8.3: Build image list for vision extraction (image-only pages)
+    // v14.8.1: Build image list for vision extraction (image-only pages)
     const images: { pageNum: number; base64: string }[] = [];
     if (pageImages && typeof pageImages === "object") {
       for (const [pn, b64] of Object.entries(pageImages)) {
@@ -1278,7 +1079,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
     if (images.length > 0) {
-      console.log(`[v14.8.3] Vision mode: ${images.length} image page(s) for ${roomName}`);
+      console.log(`[v14.8.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
     const tLlm = Date.now();
@@ -1306,10 +1107,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
-    // v14.8.3: ALWAYS override room to the API-provided roomName.
+    // v14.8.1: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
     
-    // v14.8.3: Auto-assign sheet_ref from extracted sheet/detail info
+    // v14.8.1: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
       for (const row of cleanedRows) {
         if (!row.sheet_ref || /^(high|medium|low)$/i.test(row.sheet_ref)) {
@@ -1318,7 +1119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.8.3: Reclassify scope_exclusions that are actually millwork
+    // v14.8.1: Reclassify scope_exclusions that are actually millwork
     for (const row of cleanedRows) {
       if (row.item_type !== "scope_exclusion") continue;
       const desc = (row.description || "").toLowerCase();
@@ -1342,7 +1143,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // v14.8.3: Postprocess material code assignment from hints (with error safety)
+    // v14.8.1: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
       if (!matHints || !legend || !rows) return;
@@ -1412,10 +1213,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     };
     assignMaterialCodes(cleanedRows, hints.materials, ctx.materialLegend);
-    } catch (e) { console.error("[v14.8.3] material assign error:", e); }
+    } catch (e) { console.error("[v14.8.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.8.3", mode: "extract",
+      ok: true, version: "v14.8.1", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
@@ -1432,7 +1233,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timing: { llmMs, totalMs: Date.now() - t0 },
     });
   } catch (err: any) {
-    console.error("[v14.8.3] error:", err?.message);
-    return res.status(500).json({ ok: false, version: "v14.8.3", error: err?.message || "Unknown error" });
+    console.error("[v14.8.1] error:", err?.message);
+    return res.status(500).json({ ok: false, version: "v14.8.1", error: err?.message || "Unknown error" });
   }
 }
