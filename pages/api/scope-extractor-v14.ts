@@ -449,7 +449,7 @@ transaction_top, decorative_panel, trim, channel, rubber_base, substrate, concea
 piano_hinge, grommet, adjustable_shelf, fixed_shelf, cpu_shelf, drawer, file_drawer,
 trash_drawer, rollout_basket, conduit, j_box, equipment_cutout, safe_cabinet,
 controls_cabinet, end_panel, corner_guard, corner_detail, stainless_panel, hanger_support,
-trellis, scope_exclusion
+trellis, scope_exclusion, ada_fascia, wall_cap
 
 DIMENSION RULES — CRITICAL:
 - Use dimensions from PRE-EXTRACTED HINTS. Match to items by context.
@@ -706,6 +706,7 @@ const VALID_ITEM_TYPES = new Set([
   "conduit", "j_box", "equipment_cutout", "safe_cabinet", "controls_cabinet",
   "end_panel", "corner_guard", "corner_detail", "stainless_panel", "hanger_support",
   "trellis", "scope_exclusion",
+  "ada_fascia", "wall_cap",
 ]);
 
 function sanitizeToon(toon: string): string {
@@ -777,6 +778,19 @@ function cleanupRows(rows: any[]): any[] {
       return row;
     }
     
+    // Pattern E (v14.8.2): item_type is valid but description == a room name.
+    // This happens when the LLM outputs: real_item_type | room | qty | ROOM_NAME_AGAIN | real_desc ...
+    // Symptoms: description === room, section_id has the real description text.
+    if (
+      itemType && VALID_ITEM_TYPES.has(itemType) &&
+      row.description && row.section_id &&
+      String(row.description).trim() === String(row.room).trim() &&
+      String(row.section_id).trim().length > 3
+    ) {
+      row.description = String(row.section_id).trim();
+      row.section_id = "";
+    }
+
     if (itemType && !VALID_ITEM_TYPES.has(itemType)) {
       
       // Pattern A: section_id has a valid item_type — fields shifted right by 2
@@ -864,6 +878,8 @@ function cleanupRows(rows: any[]): any[] {
           else if (/mirror/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/grab.*bar|soap.*dispenser|paper.*towel|hand.*dryer/i.test(combined)) row.item_type = "scope_exclusion";
           else if (/trellis/i.test(combined)) row.item_type = "trellis";
+          else if (/ada.*fascia|fascia.*ada|accessibility.*fascia/i.test(combined)) row.item_type = "ada_fascia";
+          else if (/wall.*cap|cap.*trim.*wall|countertop.*cap|cap.*panel/i.test(combined)) row.item_type = "wall_cap";
           
           if (desc === row.room || !desc) {
             row.description = itemType;
@@ -887,6 +903,59 @@ function cleanupRows(rows: any[]): any[] {
       }
     }
     
+    // Fix A (v14.8.2): Backfill width_mm from description text when field is empty.
+    // Targets rows where the LLM wrote run dimensions into description text but left width_mm blank.
+    // We only attempt this for item types that represent linear/planimetric millwork runs.
+    const _needsWidth =
+      (!row.width_mm || row.width_mm === "" || Number(row.width_mm) === 0) &&
+      /cabinet|countertop|transaction_top|trellis|panel|shelf|ada_fascia|wall_cap/i.test(row.item_type || "");
+    if (_needsWidth && row.description) {
+      const _desc = String(row.description);
+      let _backfillMm = 0;
+
+      // Helper: feet + inch + fraction -> mm
+      const _toMm = (ft: number, inch: number, frac: number): number =>
+        Math.round(ft * 304.8 + (inch + frac) * 25.4);
+
+      // P1: feet-inches compound with optional fraction  e.g. 5'-0", 18'-6", 4'-5 1/2"
+      const _m1 = _desc.match(/\b(\d{1,2})'-(\d{1,2})(?:\s+(\d+)\/(\d+))?["'\s]/);
+      if (_m1) {
+        const _ft = parseInt(_m1[1]);
+        const _in = parseInt(_m1[2]);
+        const _fr = _m1[3] ? parseInt(_m1[3]) / parseInt(_m1[4]) : 0;
+        _backfillMm = _toMm(_ft, _in, _fr);
+      }
+
+      // P2: plain inches with optional fraction  e.g. 60", 18 1/2"
+      if (!_backfillMm) {
+        const _m2 = _desc.match(/\b(\d{2,3})(?:\s+(\d+)\/(\d+))?"/);
+        if (_m2) {
+          const _in = parseInt(_m2[1]);
+          const _fr = _m2[2] ? parseInt(_m2[2]) / parseInt(_m2[3]) : 0;
+          _backfillMm = Math.round((_in + _fr) * 25.4);
+        }
+      }
+
+      // P3: explicit mm value  e.g. 1524mm
+      if (!_backfillMm) {
+        const _m3 = _desc.match(/\b(\d{3,5})\s*mm\b/i);
+        if (_m3) _backfillMm = parseInt(_m3[1]);
+      }
+
+      // P4: plain feet only  e.g. 5', 18'  (last resort)
+      if (!_backfillMm) {
+        const _m4 = _desc.match(/\b(\d{1,2})\'\s*(?!\d)/);
+        if (_m4) _backfillMm = Math.round(parseInt(_m4[1]) * 304.8);
+      }
+
+      // Sanity gate: cabinet runs are 1ft (305mm) to 40ft (12192mm)
+      // Values outside this range are likely heights or depths leaking in — skip
+      if (_backfillMm >= 305 && _backfillMm <= 12192) {
+        row.width_mm = _backfillMm;
+        if (!row.dim_source || row.dim_source === "unknown") row.dim_source = "calculated";
+      }
+    }
+
     // Reclassify tall_cabinet → base_cabinet when height is 3'-0" (914mm) or below
     if (row.item_type === "tall_cabinet" && row.height_mm) {
       const h = Number(row.height_mm);
@@ -1216,7 +1285,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch (e) { console.error("[v14.8.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.8.1", mode: "extract",
+      ok: true, version: "v14.8.2", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
