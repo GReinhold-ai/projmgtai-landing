@@ -509,6 +509,21 @@ SHOP DRAWING MODE ACTIVE:
 
   p += `
 
+VANITY SECTION EXTRACTION — CRITICAL:
+- On vanity/locker elevation drawings, section callout bubbles (e.g. 101A, 108B, 11A, 346C)
+  each represent a SEPARATE cabinet. Extract every visible callout as its own base_cabinet row.
+- Do NOT collapse multiple sections into one row. One callout = one row.
+- Section number = section_id field. Use description: "Vanity Section [ID]".
+- If dimensions appear near the callout, assign to width_mm. Standard depth = 533mm (21").
+
+WALL FINISH / SUBSTRATE EXTRACTION:
+- FRP panels, plywood substrates, rubber base, wall tile, and reducer strips installed by
+  the millwork sub ARE in scope. Extract them even when no cabinet is present.
+- FRP / fiberglass panels → item_type=decorative_panel, include WC-XX material code.
+- Plywood on wall → item_type=substrate.
+- Rubber base / coved base → item_type=rubber_base, unit=LF.
+- Reducer strips → item_type=trim.
+
 WHAT TO EXTRACT: cabinets, countertops, panels, trim, hardware, equipment cutouts,
 substrates, conduit/electrical by millwork fab, scope exclusions (NIC/by others).
 WHAT NOT TO EXTRACT: items by G.C., electrical, plumbing, flooring, paint.
@@ -650,6 +665,79 @@ function buildUserPrompt(
     parts.push(`  ${h.type}: qty=${h.qty}${h.spec ? ` "${h.spec}"` : ""}`);
   }
   parts.push("");
+
+  // v14.8.3: Room-specific extraction hints
+  // Injected into the user prompt when the room name matches known patterns.
+  // These replicate what a proposal/SOW provides — explicit scope language to
+  // guide the LLM when drawing text alone is ambiguous.
+  const roomLower = roomName.toLowerCase();
+
+  if (/vanity|locker.*room|men.*vanity|women.*vanity|unisex.*vanity/i.test(roomName)) {
+    parts.push("## ROOM HINT: VANITY / LOCKER ROOM");
+    parts.push("This room contains individual vanity or locker cabinet sections.");
+    parts.push("CRITICAL — section extraction rules:");
+    parts.push("- Section IDs like 101A, 108B, 11A, 23B are individual cabinet sections on the elevation.");
+    parts.push("  Extract EACH section as a separate base_cabinet row even if no dimension string is visible.");
+    parts.push("- Section number prefixes (e.g. 101, 108, 111, 123, 171, 346) often correspond to");
+    parts.push("  ADA-compliant or standard vanity runs — treat each letter suffix as a separate cabinet.");
+    parts.push("- Look for dimension strings adjacent to or below each section callout bubble.");
+    parts.push("- Standard vanity cabinet widths: 18"=457mm, 21"=533mm, 24"=610mm, 30"=762mm.");
+    parts.push("- Standard vanity depth: 21" (533mm). Height to counter: 34" (864mm).");
+    parts.push("- If ADA vanity is noted, add item_type=ada_fascia for the knee-space fascia panel.");
+    parts.push("- Countertop: solid surface or stone top spanning the full run — add as countertop row.");
+    parts.push("- Concealed hinges for cabinet doors — add as concealed_hinge row with qty = door count.");
+    parts.push("");
+  }
+
+  if (/service\s*manager/i.test(roomName)) {
+    parts.push("## ROOM HINT: SERVICE MANAGER");
+    parts.push("This room typically contains a casework run along one or more walls.");
+    parts.push("CRITICAL — do NOT return empty or only scope_exclusions for this room.");
+    parts.push("Expected millwork scope (extract ALL that appear in the drawing text):");
+    parts.push("- Upper wall cabinets (upper_cabinet): typically 12" deep, 30"–42" tall");
+    parts.push("- Base cabinets (base_cabinet): typically 24" deep, 34" tall");
+    parts.push("- Wall shelves (fixed_shelf or adjustable_shelf)");
+    parts.push("- File drawers (file_drawer) — look for 'file' or 'lateral' near cabinet sections");
+    parts.push("- Locks — note qty in description if called out (e.g. '8 locks')");
+    parts.push("- Countertop (countertop): spanning the base cabinet run");
+    parts.push("- Stereo/AV/controls cabinet (controls_cabinet): custom millwork, NOT scope_exclusion");
+    parts.push("- Section letters like 11B, 48D, 55D, 75D are individual cabinet sections —");
+    parts.push("  extract each as a separate row with section_id matching the callout.");
+    parts.push("- Look for dimension strings like 5'-0", 4'-0" etc. for run widths.");
+    parts.push("");
+  }
+
+  if (/team\s*room/i.test(roomName)) {
+    parts.push("## ROOM HINT: TEAM ROOM");
+    parts.push("This is a staff break/locker room. Extract ALL finish and substrate items:");
+    parts.push("- FRP panels (decorative_panel): look for 'FRP', 'WC-4', fiberglass reinforced panel");
+    parts.push("  notes. These are wall-applied millwork panels — extract with item_type=decorative_panel.");
+    parts.push("  Include height notation in description (e.g. '10\'-0 FRP WC-4B entire room').");
+    parts.push("- Plywood substrate (substrate): look for '1/2 plywood', 'ply substrate', 'blocking'");
+    parts.push("  on walls — these are millwork-installed substrates.");
+    parts.push("- Rubber base (rubber_base): floor base at all walls — extract with LF unit.");
+    parts.push("  Look for material codes like RF-3B, custom color numbers.");
+    parts.push("- Ceramic/coved base tile (rubber_base): if noted as millwork-installed, extract it.");
+    parts.push("- Reducer strip (trim): transition strip at floor material change.");
+    parts.push("- Wall tile noted as millwork scope (decorative_panel or scope_exclusion if by GC).");
+    parts.push("- DO NOT skip this room — it has multiple line items even without cabinet drawings.");
+    parts.push("");
+  }
+
+  if (/team\s*member/i.test(roomName)) {
+    parts.push("## ROOM HINT: TEAM MEMBERS (LOCKER ROOM)");
+    parts.push("This room contains locker units, benches, and towel stations.");
+    parts.push("- Each locker unit is a separate tall_cabinet or base_cabinet row.");
+    parts.push("- Locker types: Surface Mount Post Form, Dial Lock, Padlock, End of Run —");
+    parts.push("  extract each type as its own row with qty and width.");
+    parts.push("- Bench units (base_cabinet): model numbers like PFB2448, PFB1248, PFB1272.");
+    parts.push("  Width = first 2 digits of model in inches × 25.4mm (e.g. PFB2448 = 24"=610mm).");
+    parts.push("- Towel stations (tall_cabinet): Small=12"(305mm), Large=15"(381mm) wide.");
+    parts.push("- Towel drop with curb (base_cabinet): 21"(533mm) wide.");
+    parts.push("- Rubber base (rubber_base): coved and ventilated — extract both if noted.");
+    parts.push("- Count TOTAL drawers across all locker units and note in assembly description.");
+    parts.push("");
+  }
 
   // Truncate OCR text to ~15K chars to stay under token budget
   let ocrText = roomText;
@@ -1178,6 +1266,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cleanedRows = cleanupRows(result.rows);
     // v14.8.1: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
+
+    // v14.8.3: Drop fully-garbled rows where both item_type AND description == room name
+    // These come from proposal text where the LLM repeats the room heading as a data row.
+    const degarbled = cleanedRows.filter(row => {
+      const t = (row.item_type || "").trim();
+      const d = (row.description || "").trim();
+      const r = (row.room || "").trim();
+      // Drop if item_type matches room name (not a valid type) and description also matches
+      if (t === r && d === r) return false;
+      if (t === r && d === "") return false;
+      return true;
+    });
+    cleanedRows.length = 0;
+    degarbled.forEach(r => cleanedRows.push(r));
     
     // v14.8.1: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
@@ -1285,7 +1387,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch (e) { console.error("[v14.8.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.8.2", mode: "extract",
+      ok: true, version: "v14.8.3", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
