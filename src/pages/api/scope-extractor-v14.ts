@@ -526,7 +526,11 @@ WALL FINISH / SUBSTRATE EXTRACTION:
 
 WHAT TO EXTRACT: cabinets, countertops, panels, trim, hardware, equipment cutouts,
 substrates, conduit/electrical by millwork fab, scope exclusions (NIC/by others).
-WHAT NOT TO EXTRACT: items by G.C., electrical, plumbing, flooring, paint.
+WHAT NOT TO EXTRACT: items by G.C., electrical, plumbing, flooring, paint,
+ceiling systems (suspended grids, acoustical tiles, gypsum board ceilings),
+structural elements (demo work, blocking by GC), sprinkler heads,
+AV mounts (TV mounts, projectors, fan mounts) unless explicitly in millwork scope.
+These items appear on finish/equipment pages but are NEVER millwork — do not extract them.
 
 Set confidence: "high" = type+dims+material, "medium" = missing one, "low" = missing two+.
 
@@ -709,18 +713,21 @@ function buildUserPrompt(
 
   if (/team\s*room/i.test(roomName)) {
     parts.push("## ROOM HINT: TEAM ROOM");
-    parts.push("This is a staff break/locker room. Extract ALL finish and substrate items:");
-    parts.push("- FRP panels (decorative_panel): look for 'FRP', 'WC-4', fiberglass reinforced panel");
-    parts.push("  notes. These are wall-applied millwork panels — extract with item_type=decorative_panel.");
-    parts.push("  Include height notation in description (e.g. '10\'-0 FRP WC-4B entire room').");
-    parts.push("- Plywood substrate (substrate): look for '1/2 plywood', 'ply substrate', 'blocking'");
-    parts.push("  on walls — these are millwork-installed substrates.");
-    parts.push("- Rubber base (rubber_base): floor base at all walls — extract with LF unit.");
-    parts.push("  Look for material codes like RF-3B, custom color numbers.");
-    parts.push("- Ceramic/coved base tile (rubber_base): if noted as millwork-installed, extract it.");
-    parts.push("- Reducer strip (trim): transition strip at floor material change.");
-    parts.push("- Wall tile noted as millwork scope (decorative_panel or scope_exclusion if by GC).");
-    parts.push("- DO NOT skip this room — it has multiple line items even without cabinet drawings.");
+    parts.push("CRITICAL: This room has NO base cabinets. Its millwork scope is wall finishes and substrates.");
+    parts.push("You MUST extract these items — do NOT return empty or only rubber_base:");
+    parts.push("");
+    parts.push("- FRP wall panels (decorative_panel): Fiberglass Reinforced Panel, material code WC-4A or WC-4B.");
+    parts.push("  Look for notes like '10\'-0 FRP entire room', 'FRP wainscot', 'WC-4B with waterproofing'.");
+    parts.push("  Each distinct FRP note = separate decorative_panel row. Include full height in description.");
+    parts.push("- Plywood substrate (substrate): '1/2\" plywood on wall', 'ply sub', 'blocking on wall'.");
+    parts.push("  These back the FRP panels — extract as substrate with unit=SF.");
+    parts.push("- Wall tile (decorative_panel or scope_exclusion): tile noted on walls — check if by GC.");
+    parts.push("- Rubber base (rubber_base): all floor base — include material code and color number.");
+    parts.push("  Look for 'RF-3B', custom color #308, coved base, slim foot ceramic base.");
+    parts.push("- Reducer strip / transition strip (trim): at floor material changes.");
+    parts.push("- Refinish existing floor (scope_exclusion if by others).");
+    parts.push("");
+    parts.push("If you see only 1-2 rubber_base rows, you are MISSING scope. Re-read for FRP panel notes.");
     parts.push("");
   }
 
@@ -1276,6 +1283,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // Drop if item_type matches room name (not a valid type) and description also matches
       if (t === r && d === r) return false;
       if (t === r && d === "") return false;
+
+      // v14.8.4: Drop Unclassified scope_exclusions that are clearly non-millwork
+      // Ceiling systems, AV mounts, sprinkler heads, structural items — never millwork scope.
+      if (r === "Unclassified" && t === "scope_exclusion") {
+        const dl = d.toLowerCase();
+        if (/ceiling|suspended.*grid|acoustical.*tile|gypsum.*board|sprinkler|demo.*ceiling|cedar.*panel.*angle|ceramic.*tile.*angle|projector|tv.*mount|fan.*mount/i.test(dl)) {
+          return false;
+        }
+      }
+
       return true;
     });
     cleanedRows.length = 0;
@@ -1387,7 +1404,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch (e) { console.error("[v14.8.1] material assign error:", e); }
 
     return res.status(200).json({
-      ok: true, version: "v14.8.3", mode: "extract",
+      ok: true, version: "v14.8.4", mode: "extract",
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
