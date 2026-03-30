@@ -21,6 +21,75 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Email capture + feedback state
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+  const [userName, setUserName] = useState("");
+  const [userCompany, setUserCompany] = useState("");
+  const [emailSubmitted, setEmailSubmitted] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackRating, setFeedbackRating] = useState("");
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+  const [emailError, setEmailError] = useState("");
+
+  // Submit email capture to Google Sheet (no backend needed)
+  const submitEmail = async () => {
+    if (!userEmail || !userEmail.includes("@")) {
+      setEmailError("Please enter a valid email address.");
+      return;
+    }
+    setEmailError("");
+    try {
+      await fetch("https://script.google.com/macros/s/PASTE_YOUR_GOOGLE_SCRIPT_ID_HERE/exec", {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "signup",
+          name: userName,
+          email: userEmail,
+          company: userCompany,
+          timestamp: new Date().toISOString(),
+          stats: stats ? `${stats.totalItems} items / ${stats.roomCount} rooms / ${stats.pageCount} pages` : "",
+          project: files[0]?.file?.name || "",
+        }),
+      });
+    } catch (_) { /* silent — no-cors always throws */ }
+    setEmailSubmitted(true);
+    setShowEmailModal(false);
+    // Auto-trigger download after email captured
+    if (resultUrl) {
+      const a = document.createElement("a");
+      a.href = resultUrl;
+      a.download = `shop_order_v1481_${(files[0]?.file?.name || "project").replace(".pdf","")}.xlsx`;
+      a.click();
+    }
+  };
+
+  // Submit feedback
+  const submitFeedback = async () => {
+    if (!feedbackText.trim()) return;
+    try {
+      await fetch("https://script.google.com/macros/s/PASTE_YOUR_GOOGLE_SCRIPT_ID_HERE/exec", {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "feedback",
+          email: userEmail,
+          rating: feedbackRating,
+          feedback: feedbackText,
+          timestamp: new Date().toISOString(),
+          project: files[0]?.file?.name || "",
+          stats: stats ? `${stats.totalItems} items / ${stats.roomCount} rooms` : "",
+        }),
+      });
+    } catch (_) { /* silent */ }
+    setFeedbackSubmitted(true);
+    setTimeout(() => { setShowFeedbackModal(false); setFeedbackSubmitted(false); setFeedbackText(""); setFeedbackRating(""); }, 2000);
+  };
+
   // Auto-detect file type from filename
   const detectFileType = (name: string): FileEntry["type"] => {
     const n = name.toLowerCase();
@@ -1081,11 +1150,16 @@ export default function HomePage() {
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v1481_${(files[0]?.file?.name || "project").replace(".pdf","")}.xlsx`}
-                style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
+              {/* Download button — shows email modal first if not yet captured */}
+              <button
+                onClick={() => emailSubmitted ? (() => { const a=document.createElement("a"); a.href=resultUrl!; a.download=`shop_order_v1481_${(files[0]?.file?.name||"project").replace(".pdf","")}.xlsx`; a.click(); })() : setShowEmailModal(true)}
+                style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, border:"none", cursor:"pointer", marginBottom:12, fontFamily:"inherit" }}>
                 ⬇ Download Excel
-              </a><br/>
-              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", marginTop:8, fontFamily:"inherit" }}>Extract Another</button>
+              </button><br/>
+              <div style={{ display:"flex", gap:12, justifyContent:"center", marginTop:8 }}>
+                <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Extract Another</button>
+                <button onClick={() => setShowFeedbackModal(true)} style={{ background:"none", border:"1px solid rgba(99,179,237,0.4)", color:"#90cdf4", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>💬 Give Feedback</button>
+              </div>
             </div>
           )}
 
@@ -1102,6 +1176,116 @@ export default function HomePage() {
       <footer style={{ textAlign:"center", padding:"40px 20px", borderTop:"1px solid rgba(255,255,255,0.06)", fontSize:12, opacity:0.4 }}>
         © 2026 ProjMgtAI — Construction Intelligence, not guesswork.
       </footer>
+
+      {/* ── EMAIL CAPTURE MODAL ── */}
+      {showEmailModal && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <div style={{ background:"#1e293b", borderRadius:16, padding:32, maxWidth:440, width:"100%", boxShadow:"0 24px 64px rgba(0,0,0,0.5)", border:"1px solid rgba(255,255,255,0.1)" }}>
+            <div style={{ fontSize:28, marginBottom:8 }}>📬</div>
+            <div style={{ fontSize:20, fontWeight:700, marginBottom:6, color:"#f1f5f9" }}>Get your results</div>
+            <div style={{ fontSize:13, color:"#94a3b8", marginBottom:24, lineHeight:1.6 }}>
+              Enter your email to download your shop order. We&apos;ll send you updates as the tool improves — no spam, unsubscribe anytime.
+            </div>
+            {stats && (
+              <div style={{ background:"rgba(34,197,94,0.1)", border:"1px solid rgba(34,197,94,0.2)", borderRadius:8, padding:"10px 14px", marginBottom:20, fontSize:12, color:"#86efac" }}>
+                ✅ {stats.totalItems} items extracted across {stats.roomCount} rooms
+              </div>
+            )}
+            <input
+              type="text"
+              placeholder="Your name"
+              value={userName}
+              onChange={e => setUserName(e.target.value)}
+              style={{ width:"100%", padding:"11px 14px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", color:"#f1f5f9", fontSize:14, marginBottom:10, boxSizing:"border-box", fontFamily:"inherit" }}
+            />
+            <input
+              type="text"
+              placeholder="Company (optional)"
+              value={userCompany}
+              onChange={e => setUserCompany(e.target.value)}
+              style={{ width:"100%", padding:"11px 14px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", color:"#f1f5f9", fontSize:14, marginBottom:10, boxSizing:"border-box", fontFamily:"inherit" }}
+            />
+            <input
+              type="email"
+              placeholder="Email address *"
+              value={userEmail}
+              onChange={e => { setUserEmail(e.target.value); setEmailError(""); }}
+              onKeyDown={e => e.key === "Enter" && submitEmail()}
+              style={{ width:"100%", padding:"11px 14px", borderRadius:8, border:`1px solid ${emailError ? "#ef4444" : "rgba(255,255,255,0.12)"}`, background:"rgba(255,255,255,0.05)", color:"#f1f5f9", fontSize:14, marginBottom:emailError ? 6 : 16, boxSizing:"border-box", fontFamily:"inherit" }}
+            />
+            {emailError && <div style={{ color:"#ef4444", fontSize:12, marginBottom:12 }}>{emailError}</div>}
+            <button
+              onClick={submitEmail}
+              style={{ width:"100%", padding:"13px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor:"pointer", fontFamily:"inherit", marginBottom:10 }}>
+              Download Excel ⬇
+            </button>
+            <button
+              onClick={() => { setShowEmailModal(false); if (resultUrl) { const a=document.createElement("a"); a.href=resultUrl; a.download=`shop_order_v1481_${(files[0]?.file?.name||"project").replace(".pdf","")}.xlsx`; a.click(); } setEmailSubmitted(true); }}
+              style={{ width:"100%", padding:"10px", background:"none", border:"none", color:"#64748b", fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+              Skip — just download
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── FEEDBACK MODAL ── */}
+      {showFeedbackModal && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <div style={{ background:"#1e293b", borderRadius:16, padding:32, maxWidth:480, width:"100%", boxShadow:"0 24px 64px rgba(0,0,0,0.5)", border:"1px solid rgba(255,255,255,0.1)" }}>
+            <div style={{ fontSize:28, marginBottom:8 }}>💬</div>
+            <div style={{ fontSize:20, fontWeight:700, marginBottom:6, color:"#f1f5f9" }}>How did it do?</div>
+            <div style={{ fontSize:13, color:"#94a3b8", marginBottom:20, lineHeight:1.6 }}>
+              Your feedback directly shapes the next version. What did it get wrong? What was missing?
+            </div>
+            {feedbackSubmitted ? (
+              <div style={{ textAlign:"center", padding:"24px 0", color:"#86efac", fontSize:16, fontWeight:600 }}>
+                ✅ Thanks — that helps a lot.
+              </div>
+            ) : (
+              <>
+                {/* Rating */}
+                <div style={{ marginBottom:16 }}>
+                  <div style={{ fontSize:12, color:"#94a3b8", marginBottom:8 }}>Overall accuracy</div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    {["Poor","Fair","Good","Great"].map(r => (
+                      <button key={r} onClick={() => setFeedbackRating(r)}
+                        style={{ flex:1, padding:"8px 4px", borderRadius:6, border:`1px solid ${feedbackRating===r ? "#60a5fa" : "rgba(255,255,255,0.12)"}`, background:feedbackRating===r ? "rgba(96,165,250,0.15)" : "transparent", color:feedbackRating===r ? "#93c5fd" : "#94a3b8", fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <textarea
+                  placeholder="What was missing or wrong? Which rooms or item types? Be as specific as you like — every detail helps."
+                  value={feedbackText}
+                  onChange={e => setFeedbackText(e.target.value)}
+                  rows={5}
+                  style={{ width:"100%", padding:"11px 14px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", color:"#f1f5f9", fontSize:13, marginBottom:16, boxSizing:"border-box", fontFamily:"inherit", resize:"vertical", lineHeight:1.6 }}
+                />
+                {!userEmail && (
+                  <input
+                    type="email"
+                    placeholder="Email (optional — so we can follow up)"
+                    value={userEmail}
+                    onChange={e => setUserEmail(e.target.value)}
+                    style={{ width:"100%", padding:"11px 14px", borderRadius:8, border:"1px solid rgba(255,255,255,0.12)", background:"rgba(255,255,255,0.05)", color:"#f1f5f9", fontSize:14, marginBottom:16, boxSizing:"border-box", fontFamily:"inherit" }}
+                  />
+                )}
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={submitFeedback}
+                    style={{ flex:1, padding:"13px", background:"linear-gradient(135deg,#3b82f6,#1d4ed8)", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
+                    Send Feedback
+                  </button>
+                  <button onClick={() => setShowFeedbackModal(false)}
+                    style={{ padding:"13px 20px", background:"none", border:"1px solid rgba(255,255,255,0.12)", color:"#94a3b8", borderRadius:8, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
