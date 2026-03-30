@@ -685,8 +685,8 @@ function buildUserPrompt(
     parts.push("- Section number prefixes (e.g. 101, 108, 111, 123, 171, 346) often correspond to");
     parts.push("  ADA-compliant or standard vanity runs — treat each letter suffix as a separate cabinet.");
     parts.push("- Look for dimension strings adjacent to or below each section callout bubble.");
-    parts.push("- Standard vanity cabinet widths: 18"=457mm, 21"=533mm, 24"=610mm, 30"=762mm.");
-    parts.push("- Standard vanity depth: 21" (533mm). Height to counter: 34" (864mm).");
+    parts.push("- Standard vanity cabinet widths: 18\"=457mm, 21\"=533mm, 24\"=610mm, 30\"=762mm.");
+    parts.push("- Standard vanity depth: 21\" (533mm). Height to counter: 34\" (864mm).");
     parts.push("- If ADA vanity is noted, add item_type=ada_fascia for the knee-space fascia panel.");
     parts.push("- Countertop: solid surface or stone top spanning the full run — add as countertop row.");
     parts.push("- Concealed hinges for cabinet doors — add as concealed_hinge row with qty = door count.");
@@ -698,8 +698,8 @@ function buildUserPrompt(
     parts.push("This room typically contains a casework run along one or more walls.");
     parts.push("CRITICAL — do NOT return empty or only scope_exclusions for this room.");
     parts.push("Expected millwork scope (extract ALL that appear in the drawing text):");
-    parts.push("- Upper wall cabinets (upper_cabinet): typically 12" deep, 30"–42" tall");
-    parts.push("- Base cabinets (base_cabinet): typically 24" deep, 34" tall");
+    parts.push("- Upper wall cabinets (upper_cabinet): typically 12\" deep, 30\"–42\" tall");
+    parts.push("- Base cabinets (base_cabinet): typically 24\" deep, 34\" tall");
     parts.push("- Wall shelves (fixed_shelf or adjustable_shelf)");
     parts.push("- File drawers (file_drawer) — look for 'file' or 'lateral' near cabinet sections");
     parts.push("- Locks — note qty in description if called out (e.g. '8 locks')");
@@ -707,7 +707,7 @@ function buildUserPrompt(
     parts.push("- Stereo/AV/controls cabinet (controls_cabinet): custom millwork, NOT scope_exclusion");
     parts.push("- Section letters like 11B, 48D, 55D, 75D are individual cabinet sections —");
     parts.push("  extract each as a separate row with section_id matching the callout.");
-    parts.push("- Look for dimension strings like 5'-0", 4'-0" etc. for run widths.");
+    parts.push("- Look for dimension strings like 5'-0\", 4'-0\" etc. for run widths.");
     parts.push("");
   }
 
@@ -738,9 +738,9 @@ function buildUserPrompt(
     parts.push("- Locker types: Surface Mount Post Form, Dial Lock, Padlock, End of Run —");
     parts.push("  extract each type as its own row with qty and width.");
     parts.push("- Bench units (base_cabinet): model numbers like PFB2448, PFB1248, PFB1272.");
-    parts.push("  Width = first 2 digits of model in inches × 25.4mm (e.g. PFB2448 = 24"=610mm).");
-    parts.push("- Towel stations (tall_cabinet): Small=12"(305mm), Large=15"(381mm) wide.");
-    parts.push("- Towel drop with curb (base_cabinet): 21"(533mm) wide.");
+    parts.push("  Width = first 2 digits of model in inches × 25.4mm (e.g. PFB2448 = 24\"=610mm).");
+    parts.push("- Towel stations (tall_cabinet): Small=12\"(305mm), Large=15\"(381mm) wide.");
+    parts.push("- Towel drop with curb (base_cabinet): 21\"(533mm) wide.");
     parts.push("- Rubber base (rubber_base): coved and ventilated — extract both if noted.");
     parts.push("- Count TOTAL drawers across all locker units and note in assembly description.");
     parts.push("");
