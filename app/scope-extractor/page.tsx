@@ -41,7 +41,7 @@ export default function HomePage() {
     }
     setEmailError("");
     try {
-      await fetch("https://script.google.com/macros/s/PASTE_YOUR_GOOGLE_SCRIPT_ID_HERE/exec", {
+      await fetch("https://script.google.com/macros/s/AKfycbzH8oiQipcIa_KhXv-yOEx_E6kPSa_mwg7CSYxTvEDeBAuUWsrYklmj8xmFGsbeCdD97g/exec", {
         method: "POST",
         mode: "no-cors",
         headers: { "Content-Type": "application/json" },
@@ -71,7 +71,7 @@ export default function HomePage() {
   const submitFeedback = async () => {
     if (!feedbackText.trim()) return;
     try {
-      await fetch("https://script.google.com/macros/s/PASTE_YOUR_GOOGLE_SCRIPT_ID_HERE/exec", {
+      await fetch("https://script.google.com/macros/s/AKfycbzH8oiQipcIa_KhXv-yOEx_E6kPSa_mwg7CSYxTvEDeBAuUWsrYklmj8xmFGsbeCdD97g/exec", {
         method: "POST",
         mode: "no-cors",
         headers: { "Content-Type": "application/json" },
