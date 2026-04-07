@@ -13,6 +13,13 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
+
+// ─── Supabase client ──────────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 // ─── SendGrid event types we care about ──────────────────────────────────────
 type SGEvent =
@@ -25,12 +32,12 @@ type SGEvent =
   | "deferred";
 
 interface SendGridEventPayload {
-  event:      SGEvent;
-  email:      string;
-  timestamp:  number;
-  lead_id?:   string;    // our custom_arg — set at send time
-  url?:       string;    // for click events
-  reason?:    string;    // for bounce events
+  event:       SGEvent;
+  email:       string;
+  timestamp:   number;
+  lead_id?:    string;   // our custom_arg — set at send time in approve.ts
+  url?:        string;   // for click events
+  reason?:     string;   // for bounce events
   sg_event_id: string;
 }
 
@@ -55,15 +62,14 @@ async function alertHotLead(email: string, leadId: string, event: SGEvent) {
 function verifySignature(req: NextApiRequest, rawBody: string): boolean {
   const secret = process.env.SENDGRID_WEBHOOK_SECRET;
   if (!secret) {
-    // Skip verification in dev — warn loudly in prod
     if (process.env.NODE_ENV === "production") {
       console.error("[webhook] SENDGRID_WEBHOOK_SECRET not set — skipping verification (INSECURE)");
     }
     return true;
   }
 
-  const signature  = req.headers["x-twilio-email-event-webhook-signature"] as string;
-  const timestamp  = req.headers["x-twilio-email-event-webhook-timestamp"] as string;
+  const signature = req.headers["x-twilio-email-event-webhook-signature"] as string;
+  const timestamp = req.headers["x-twilio-email-event-webhook-timestamp"] as string;
   if (!signature || !timestamp) return false;
 
   const payload  = timestamp + rawBody;
@@ -74,17 +80,17 @@ function verifySignature(req: NextApiRequest, rawBody: string): boolean {
 // ─── Status mapper ────────────────────────────────────────────────────────────
 function eventToStatus(event: SGEvent): string | null {
   switch (event) {
-    case "delivered":    return "sent";
-    case "open":         return "opened";
-    case "click":        return "clicked";
-    case "bounce":       return "bounced";
-    case "unsubscribe":  return "unsubscribed";
-    case "spamreport":   return "spam";
-    default:             return null;
+    case "delivered":   return "sent";
+    case "open":        return "opened";
+    case "click":       return "clicked";
+    case "bounce":      return "bounced";
+    case "unsubscribe": return "unsubscribed";
+    case "spamreport":  return "spam";
+    default:            return null;
   }
 }
 
-// ─── Disable body parsing — we need raw body for signature verification ───────
+// ─── Disable body parsing — need raw body for signature verification ──────────
 export const config = { api: { bodyParser: false } };
 
 async function readRawBody(req: NextApiRequest): Promise<string> {
@@ -124,31 +130,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     console.log(`[webhook] ${event.event} | lead: ${event.lead_id} | ${event.email}`);
 
-    // ── Update Supabase ───────────────────────────────────────────────────────
-    // Uncomment when Supabase is configured:
-    //
-    // await supabase
-    //   .from("leads")
-    //   .update({
-    //     status:           newStatus,
-    //     [`${event.event}_at`]: new Date(event.timestamp * 1000).toISOString(),
-    //   })
-    //   .eq("id", event.lead_id);
+    // ── Update lead status in Supabase ────────────────────────────────────────
+    const updatePayload: Record<string, string> = {
+      status: newStatus,
+      [`${event.event}_at`]: new Date(event.timestamp * 1000).toISOString(),
+    };
 
-    // ── Alert on high-value engagement ───────────────────────────────────────
+    const { error: dbError } = await supabase
+      .from("leads")
+      .update(updatePayload)
+      .eq("id", event.lead_id);
+
+    if (dbError) {
+      // Log but don't return 500 — SendGrid retries on non-200 and will flood us
+      console.error(`[webhook] Supabase update failed for lead ${event.lead_id}:`, dbError.message);
+    }
+
+    // ── Alert on high-value engagement ────────────────────────────────────────
     if (event.event === "click" || event.event === "open") {
       await alertHotLead(event.email, event.lead_id, event.event);
     }
 
-    // ── Add to SendGrid suppression on unsubscribe/spam ───────────────────────
+    // ── Add to suppressions on unsubscribe/spam ───────────────────────────────
     if (event.event === "unsubscribe" || event.event === "spamreport") {
       console.log(`[webhook] Suppressing ${event.email} — ${event.event}`);
-      // SendGrid handles this automatically when Global Unsubscribe is enabled
-      // Add to your own suppression table here for double-safety:
-      // await supabase.from("suppressions").insert({ email: event.email, reason: event.event });
+
+      const { error: suppressError } = await supabase
+        .from("suppressions")
+        .upsert(
+          { email: event.email, reason: event.event },
+          { onConflict: "email" }
+        );
+
+      if (suppressError) {
+        console.error(`[webhook] Suppression insert failed for ${event.email}:`, suppressError.message);
+      }
     }
   }
 
-  // SendGrid expects a 200 — any other status triggers retries
+  // SendGrid expects 200 — any other status triggers retries
   return res.status(200).json({ received: events.length });
 }

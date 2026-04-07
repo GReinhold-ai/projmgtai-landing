@@ -3,27 +3,23 @@
 //
 // POST /api/outreach/approve
 //
-// Finalizes a reviewed lead: stores the approved subject + body, schedules
-// the send via SendGrid for the next optimal send window (Tue–Thu 7–8:30 AM
-// recipient local time), and marks the lead as "approved" in Supabase.
-//
-// The actual send is handled by a separate SendGrid scheduled job — this
-// route only queues. That separation means Gary can approve at midnight and
-// emails still land at the right time.
+// Finalizes a reviewed lead: checks suppression, queues a scheduled SendGrid
+// send (Tue–Thu 7:30 AM recipient local time), and marks the lead as
+// "approved" in Supabase.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import sgMail from "@sendgrid/mail";
+import { createClient } from "@supabase/supabase-js";
 import type { ApproveRequest, ApproveResponse, ErrorResponse } from "../../../types/outreach";
 
-// ─── SendGrid client (only imported when key is available) ────────────────────
-// Install: npm install @sendgrid/mail
-// import sgMail from "@sendgrid/mail";
-// sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+// ─── Clients ──────────────────────────────────────────────────────────────────
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
-// ─── Supabase client ──────────────────────────────────────────────────────────
-// Install: npm install @supabase/supabase-js
-// import { createClient } from "@supabase/supabase-js";
-// const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!  // service role — RLS is OFF, needs write access
+);
 
 // ─── Slack notifier ───────────────────────────────────────────────────────────
 async function notifySlack(company: string, contact: string, scheduledFor: string) {
@@ -41,11 +37,9 @@ async function notifySlack(company: string, contact: string, scheduledFor: strin
 
 // ─── Send window calculator ───────────────────────────────────────────────────
 // Returns the next Tue/Wed/Thu at 7:30 AM in the recipient's timezone.
-// Falls back to UTC if timezone is unknown.
 function nextSendWindow(recipientTimezone = "America/Los_Angeles"): Date {
   const now = new Date();
 
-  // Walk forward up to 7 days to find the next Tue (2), Wed (3), or Thu (4)
   for (let daysAhead = 0; daysAhead <= 7; daysAhead++) {
     const candidate = new Date(now);
     candidate.setDate(now.getDate() + daysAhead);
@@ -56,15 +50,12 @@ function nextSendWindow(recipientTimezone = "America/Los_Angeles"): Date {
     }).format(candidate);
 
     if (["Tue", "Wed", "Thu"].includes(localDow)) {
-      // Set to 7:30 AM in recipient timezone — approximate via UTC offset
-      // In production use a proper timezone library (date-fns-tz or luxon)
       const send = new Date(candidate);
-      send.setUTCHours(15, 30, 0, 0); // 7:30 AM PT ≈ 15:30 UTC (adjust per recipient)
+      send.setUTCHours(15, 30, 0, 0); // 7:30 AM PT ≈ 15:30 UTC
       if (send > now) return send;
     }
   }
 
-  // Fallback: 24h from now
   return new Date(Date.now() + 24 * 60 * 60 * 1000);
 }
 
@@ -100,60 +91,85 @@ export default async function handler(
   const { lead_id, subject, body, contact_email, contact_name } = req.body as ApproveRequest;
 
   try {
-    const sendAt = nextSendWindow();
+    const sendAt    = nextSendWindow();
     const sendAtISO = sendAt.toISOString();
 
-    // ── 1. Queue in SendGrid ──────────────────────────────────────────────────
-    // Uncomment when SENDGRID_API_KEY is configured:
-    //
-    // await sgMail.send({
-    //   to:           contact_email,
-    //   from: {
-    //     email:      "outreach@projmgt.ai",
-    //     name:       "Gary Reinhold | ProjMgt.AI",
-    //   },
-    //   replyTo:      "gary@projmgt.ai",
-    //   subject,
-    //   text:         body,
-    //   sendAt:       Math.floor(sendAt.getTime() / 1000), // Unix timestamp for scheduled send
-    //   trackingSettings: {
-    //     clickTracking:  { enable: true },
-    //     openTracking:   { enable: true },
-    //   },
-    //   customArgs: {
-    //     lead_id,          // lets the webhook route map events back to our DB record
-    //   },
-    // });
+    // ── 1. Check suppression list ─────────────────────────────────────────────
+    const { data: suppressed } = await supabase
+      .from("suppressions")
+      .select("email")
+      .eq("email", contact_email)
+      .maybeSingle();
 
-    // ── 2. Mark lead as approved in Supabase ─────────────────────────────────
-    // Uncomment when Supabase is configured:
-    //
-    // const { error: dbError } = await supabase
-    //   .from("leads")
-    //   .update({
-    //     status:            "approved",
-    //     approved_subject:  subject,
-    //     approved_body:     body,
-    //     send_scheduled_for: sendAtISO,
-    //     approved_at:       new Date().toISOString(),
-    //   })
-    //   .eq("id", lead_id);
-    //
-    // if (dbError) throw new Error(`Supabase update failed: ${dbError.message}`);
+    if (suppressed) {
+      console.warn(`[approve] ${contact_email} is suppressed — aborting`);
+      return res.status(409).json({
+        success: false,
+        error: `${contact_email} is on the suppression list.`,
+        code: "SUPPRESSED",
+      });
+    }
 
-    // ── 3. Notify Gary via Slack ──────────────────────────────────────────────
+    // ── 2. Fetch company name for Slack notification ───────────────────────────
+    const { data: lead } = await supabase
+      .from("leads")
+      .select("company")
+      .eq("id", lead_id)
+      .maybeSingle();
+
+    const companyName = lead?.company ?? lead_id;
+
+    // ── 3. Queue in SendGrid (scheduled send) ─────────────────────────────────
+    await sgMail.send({
+      to:      contact_email,
+      from: {
+        email: "outreach@projmgt.ai",
+        name:  "Gary Reinhold | ProjMgt.AI",
+      },
+      replyTo: "gary@projmgt.ai",
+      subject,
+      text:    body,
+      sendAt:  Math.floor(sendAt.getTime() / 1000), // Unix timestamp
+      trackingSettings: {
+        clickTracking: { enable: true },
+        openTracking:  { enable: true },
+      },
+      customArgs: {
+        lead_id,  // webhook uses this to map SendGrid events back to the DB row
+      },
+    });
+
+    // ── 4. Mark lead as approved in Supabase ──────────────────────────────────
+    const { error: dbError } = await supabase
+      .from("leads")
+      .update({
+        status:             "approved",
+        approved_subject:   subject,
+        approved_body:      body,
+        send_scheduled_for: sendAtISO,
+        approved_at:        new Date().toISOString(),
+      })
+      .eq("id", lead_id);
+
+    if (dbError) throw new Error(`Supabase update failed: ${dbError.message}`);
+
+    // ── 5. Notify Gary via Slack ──────────────────────────────────────────────
     await notifySlack(
-      lead_id,  // replace with company name once DB lookup is wired
+      companyName,
       contact_name ?? contact_email,
-      sendAt.toLocaleString("en-US", { timeZone: "America/Los_Angeles", dateStyle: "short", timeStyle: "short" })
+      sendAt.toLocaleString("en-US", {
+        timeZone:  "America/Los_Angeles",
+        dateStyle: "short",
+        timeStyle: "short",
+      })
     );
 
-    console.log(`[approve] Lead ${lead_id} queued → ${contact_email} at ${sendAtISO}`);
+    console.log(`[approve] Lead ${lead_id} (${companyName}) queued → ${contact_email} at ${sendAtISO}`);
 
     return res.status(200).json({
-      success: true,
-      queued_at:           new Date().toISOString(),
-      send_scheduled_for:  sendAtISO,
+      success:            true,
+      queued_at:          new Date().toISOString(),
+      send_scheduled_for: sendAtISO,
     });
 
   } catch (err: unknown) {
