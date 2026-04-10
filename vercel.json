@@ -3,8 +3,5 @@
     "src/pages/api/extract-and-export.ts": { "maxDuration": 60, "memory": 1024 },
     "src/pages/api/scope-extractor-v14.ts": { "maxDuration": 60 },
     "pages/api/process-upload.ts": { "maxDuration": 60, "memory": 1024 }
-  },
-  "api": {
-    "bodySizeLimit": "50mb"
   }
 }
