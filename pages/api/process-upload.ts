@@ -1,4 +1,4 @@
-// pages/api/process-upload.ts
+﻿// pages/api/process-upload.ts
 // Receives multipart FormData from /upload page
 // 1. Writes upload record to Supabase `uploads` table
 // 2. Sends confirmation email via SendGrid immediately
@@ -18,7 +18,7 @@ export const config = {
   },
 };
 
-// ── Supabase REST helper (no SDK needed) ──────────────────────────────────────
+// â”€â”€ Supabase REST helper (no SDK needed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function supabaseInsert(table: string, record: Record<string, unknown>) {
   const res = await fetch(
     `${process.env.SUPABASE_URL}/rest/v1/${table}`,
@@ -40,7 +40,7 @@ async function supabaseInsert(table: string, record: Record<string, unknown>) {
   return res.json();
 }
 
-// ── SendGrid confirmation email ───────────────────────────────────────────────
+// â”€â”€ SendGrid confirmation email â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function sendConfirmationEmail(to: string, company: string, projectName: string) {
   const html = `
 <!DOCTYPE html>
@@ -63,7 +63,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
             <td style="padding:32px 40px 24px;">
               <p style="margin:0 0 6px;font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.2em;color:#c8922a;text-transform:uppercase;">// ProjMgt.AI</p>
               <h1 style="margin:0;font-size:28px;font-weight:700;color:#f0ede8;line-height:1.1;">
-                Your plan set is<br>in the queue.
+                Your extraction<br>link is ready.
               </h1>
             </td>
           </tr>
@@ -78,7 +78,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                 Hi ${company},<br><br>
                 We've received your upload for <strong style="color:#f0ede8;">${projectName}</strong> and 
                 kicked off the extraction pipeline. Your Excel workbook will arrive at this address 
-                in the next <strong style="color:#c8922a;">2–5 minutes</strong>.
+                in the next <strong style="color:#c8922a;">2â€“5 minutes</strong>.
               </p>
 
               <!-- What's in the workbook -->
@@ -87,14 +87,14 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                   <p style="margin:0 0 10px;font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.15em;color:#454858;text-transform:uppercase;">What's in your workbook</p>
                 </td></tr>
                 ${[
-                  ["📋", "All Items tab", "Every millwork item extracted by room"],
-                  ["🏗️", "WBS Summary", "Trade hierarchy — cabinetry, countertops, shelving"],
-                  ["✅", "Bid Checklist", "Blocking, hardware, ADA, finish — flagged by room"],
-                  ["⚠️", "RFI Log", "Missing scope, dims, and material gaps"],
+                  ["ðŸ“‹", "All Items tab", "Every millwork item extracted by room"],
+                  ["ðŸ—ï¸", "WBS Summary", "Trade hierarchy â€” cabinetry, countertops, shelving"],
+                  ["âœ…", "Bid Checklist", "Blocking, hardware, ADA, finish â€” flagged by room"],
+                  ["âš ï¸", "RFI Log", "Missing scope, dims, and material gaps"],
                 ].map(([icon, title, desc]) => `
                 <tr><td style="padding:4px 16px 10px;">
                   <p style="margin:0;font-size:13px;color:#9098a8;">
-                    ${icon} <strong style="color:#f0ede8;">${title}</strong> — ${desc}
+                    ${icon} <strong style="color:#f0ede8;">${title}</strong> â€” ${desc}
                   </p>
                 </td></tr>`).join("")}
                 <tr><td height="6"></td></tr>
@@ -115,7 +115,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
           <tr>
             <td style="padding:20px 40px;">
               <p style="margin:0;font-family:'Courier New',monospace;font-size:10px;color:#2a2d3a;letter-spacing:0.08em;">
-                // PROJMGT.AI · CENTRIV AI · FULLERTON CA<br>
+                // PROJMGT.AI Â· CENTRIV AI Â· FULLERTON CA<br>
                 // YOU'RE RECEIVING THIS BECAUSE YOU SUBMITTED A PLAN SET
               </p>
             </td>
@@ -141,7 +141,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
         name: "Gary Reinhold | ProjMgt.AI",
       },
       reply_to: { email: "gary@projmgt.ai" },
-      subject: `Your millwork extraction is running — ${projectName}`,
+      subject: `Your millwork extraction is running â€” ${projectName}`,
       content: [{ type: "text/html", value: html }],
     }),
   });
@@ -152,8 +152,8 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
   }
 }
 
-// ── Fire-and-forget extraction ────────────────────────────────────────────────
-// Calls api.projmgt.ai with the uploaded files — does NOT await response
+// â”€â”€ Fire-and-forget extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Calls api.projmgt.ai with the uploaded files â€” does NOT await response
 // Updates Supabase extractions table when done (handled by background fetch)
 async function fireExtraction(
   uploadId: string,
@@ -181,7 +181,7 @@ async function fireExtraction(
     form.append(`tag_${filename}`, tag);
   }
 
-  // Fire and forget — no await, no timeout handling needed here
+  // Fire and forget â€” no await, no timeout handling needed here
   fetch(`${process.env.EXTRACTION_API_URL}/extract-and-deliver`, {
     method: "POST",
     body: form,
@@ -190,7 +190,7 @@ async function fireExtraction(
   });
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// â”€â”€ Main handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -258,7 +258,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
   } catch (err) {
     console.error("[process-upload] Supabase log failed:", err);
-    // Non-fatal — continue even if logging fails
+    // Non-fatal â€” continue even if logging fails
   }
 
   // 2. Send confirmation email immediately
@@ -266,7 +266,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     await sendConfirmationEmail(email, company, projectName);
   } catch (err) {
     console.error("[process-upload] Confirmation email failed:", err);
-    // Non-fatal — don't block the response
+    // Non-fatal â€” don't block the response
   }
 
   // 3. Fire extraction async (no await)
@@ -274,7 +274,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     fireExtraction(uploadId, filePaths, fileTags, { email, company, projectName, projectType });
   }
 
-  // 4. Return immediately — UI advances to done state
+  // 4. Return immediately â€” UI advances to done state
   return res.status(200).json({
     ok: true,
     upload_id: uploadId,
