@@ -262,7 +262,7 @@ export default function UploadPage() {
               <div style={{ fontSize:"36px" }}>✓</div>
               <div className="state-title">You are in the queue.</div>
               <div className="done-email-badge">Results going to: {submittedEmail}</div>
-              <div className="state-sub">Your Excel workbook will arrive in <strong>2-5 minutes</strong>. Check spam if needed.</div>
+              <div className="state-sub">Check your email for a link to run your extraction. It takes about 2 minutes and downloads directly to your browser.</div>
               <div className="done-list">
                 {["All millwork items extracted by room","WBS summary with trade hierarchy","Bid checklist - blocking, hardware, ADA, finish","RFI log - missing scope, dims, materials"].map((item) => (
                   <div key={item} className="done-item"><div className="done-check">✓</div><span>{item}</span></div>
@@ -285,3 +285,4 @@ export default function UploadPage() {
     </>
   );
 }
+
