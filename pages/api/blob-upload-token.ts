@@ -3,7 +3,7 @@
 // Generates a signed upload token for the browser to upload directly to Blob storage
 // Deploy to: pages/api/blob-upload-token.ts AND src/pages/api/blob-upload-token.ts
 
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/next";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob";
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -36,3 +36,4 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: String(err) });
   }
 }
+
