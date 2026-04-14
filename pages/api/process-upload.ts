@@ -89,7 +89,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                 ].map(([title, desc]) => `
                 <tr><td style="padding:4px 16px 10px;">
                   <p style="margin:0;font-size:13px;color:#9098a8;">
-                    ${icon} <strong style="color:#f0ede8;">${title}</strong> â€” ${desc}
+                    <strong style="color:#f0ede8;">${title}</strong> â€” ${desc}
                   </p>
                 </td></tr>`).join("")}
                 <tr><td height="6"></td></tr>
