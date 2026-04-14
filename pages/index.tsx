@@ -1,223 +1,359 @@
-// pages/index.tsx
-// ProjMgtAI Homepage — conversion-focused landing page
-// Replaces the old WBS Builder v1 page
+// pages/index.tsx  v14.9.31
+// Replaces old 3-step WBS builder landing page.
+// Primary CTA: upload PDFs + email capture -> /api/process-upload
+// Secondary CTA: go straight to scope extractor
+//
+// Pages Router (not App Router) — correct location for homepage
+
+import React, { useRef, useState } from "react";
 import Head from "next/head";
 import Link from "next/link";
 
+type UploadStatus = "idle" | "uploading" | "done" | "error";
+
+const PROJECT_TYPES = [
+  "Fitness / Recreation",
+  "Hospitality / Restaurant",
+  "Golf / Country Club",
+  "Healthcare / Medical Office",
+  "Corporate / Office",
+  "Retail / Commercial",
+  "Multi-Family Residential",
+  "Other",
+];
+
+const FILE_TAGS = ["Plans", "Specs", "Addenda", "Shop Drawings"];
+
+type FileEntry = {
+  file: File;
+  tag: string;
+};
+
 export default function HomePage() {
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [projectType, setProjectType] = useState(PROJECT_TYPES[0]);
+  const [status, setStatus] = useState<UploadStatus>("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function autoTag(filename: string): string {
+    const lower = filename.toLowerCase();
+    if (/spec|division|div\d|csi/.test(lower)) return "Specs";
+    if (/addend|delta|revision|rev-\d/.test(lower)) return "Addenda";
+    if (/shop|submittal|sub/.test(lower)) return "Shop Drawings";
+    return "Plans";
+  }
+
+  function handleFiles(newFiles: FileList | null) {
+    if (!newFiles) return;
+    const added: FileEntry[] = [];
+    for (let i = 0; i < newFiles.length; i++) {
+      const f = newFiles[i];
+      if (f.type === "application/pdf") {
+        added.push({ file: f, tag: autoTag(f.name) });
+      }
+    }
+    setEntries((prev) => [...prev, ...added]);
+    setErrorMsg("");
+  }
+
+  function removeEntry(i: number) {
+    setEntries((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function updateTag(i: number, tag: string) {
+    setEntries((prev) => prev.map((e, idx) => (idx === i ? { ...e, tag } : e)));
+  }
+
+  async function handleSubmit() {
+    if (!email || !company) {
+      setErrorMsg("Email and company name are required.");
+      return;
+    }
+    if (entries.length === 0) {
+      setErrorMsg("Please attach at least one PDF.");
+      return;
+    }
+
+    setStatus("uploading");
+    setErrorMsg("");
+
+    try {
+      const form = new FormData();
+      form.append("email", email);
+      form.append("company", company);
+      form.append("project_name", projectName || `${company} Project`);
+      form.append("project_type", projectType);
+
+      for (const { file, tag } of entries) {
+        form.append("files", file, file.name);
+        form.append(`tag_${file.name}`, tag);
+      }
+
+      const res = await fetch("/api/process-upload", {
+        method: "POST",
+        body: form,
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server error ${res.status}`);
+      }
+
+      setStatus("done");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Upload failed. Please try again.");
+      setStatus("error");
+    }
+  }
+
+  function reset() {
+    setEntries([]);
+    setEmail("");
+    setCompany("");
+    setProjectName("");
+    setProjectType(PROJECT_TYPES[0]);
+    setStatus("idle");
+    setErrorMsg("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  const totalMB = entries.reduce((s, e) => s + e.file.size, 0) / 1024 / 1024;
+
   return (
     <>
       <Head>
-        <title>ProjMgtAI — AI Millwork Scope Extractor</title>
-        <meta name="description" content="Upload your architectural plan set and get 130+ millwork scope items extracted into a structured shop order in under 2 minutes. Free to try." />
-        <meta property="og:title" content="ProjMgtAI — AI Millwork Scope Extractor" />
-        <meta property="og:description" content="PDF plan set to structured shop order in under 2 minutes. Cabinets, countertops, dimensions, materials, RFIs, WBS summary." />
-        <link rel="canonical" href="https://projmgt.ai" />
+        <title>ProjMgtAI - Millwork Scope Extraction</title>
+        <meta
+          name="description"
+          content="Upload architectural plan PDFs. AI extracts millwork scope by room and delivers a bid-ready Excel workbook."
+        />
       </Head>
 
-      <div style={{ minHeight: "100vh", background: "#0a0f1e", color: "#e2e8f0", fontFamily: "'system-ui', -apple-system, sans-serif" }}>
+      <main style={{ minHeight: "100vh", background: "linear-gradient(168deg,#0a0e1a 0%,#0f1729 40%,#111d2e 100%)", color: "#e2e8f0", fontFamily: "'Inter','Helvetica Neue',Arial,sans-serif" }}>
 
         {/* Nav */}
         <nav style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 40px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-          <div style={{ fontWeight: 800, fontSize: 18, color: "#fff", letterSpacing: "-0.02em" }}>
-            ProjMgtAI
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 28, height: 28, background: "linear-gradient(135deg,#22d3ee,#6366f1)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#0a0e1a" }}>P</div>
+            <span style={{ fontWeight: 700, fontSize: 16 }}>ProjMgtAI</span>
           </div>
-          <div style={{ display: "flex", gap: 28, alignItems: "center", fontSize: 14 }}>
-            <Link href="/how-it-works" style={{ color: "#94a3b8", textDecoration: "none" }}>How it works</Link>
-            <Link href="/schema" style={{ color: "#94a3b8", textDecoration: "none" }}>Schema</Link>
-            <Link href="/blog" style={{ color: "#94a3b8", textDecoration: "none" }}>Blog</Link>
-            <Link href="/scope-extractor" style={{ padding: "8px 20px", background: "#22c55e", color: "#fff", borderRadius: 8, fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
-              Try free →
+          <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+            <Link href="/scope-extractor" style={{ fontSize: 13, color: "#94a3b8", textDecoration: "none" }}>
+              Scope Extractor
             </Link>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, opacity: 0.6 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px #22c55e" }} />
+              v14.9.31 Live
+            </span>
           </div>
         </nav>
 
         {/* Hero */}
-        <section style={{ maxWidth: 900, margin: "0 auto", padding: "80px 40px 60px", textAlign: "center" }}>
-          <div style={{ display: "inline-block", padding: "4px 14px", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 20, fontSize: 12, color: "#86efac", fontWeight: 600, marginBottom: 28, letterSpacing: "0.04em" }}>
-            BETA — FREE TO TRY
+        <section style={{ textAlign: "center", padding: "72px 20px 48px" }}>
+          <div style={{ display: "inline-block", padding: "6px 16px", border: "1px solid rgba(34,211,238,0.3)", borderRadius: 20, fontSize: 12, color: "#22d3ee", marginBottom: 24, letterSpacing: "0.05em" }}>
+            AI-native millwork estimating
           </div>
-          <h1 style={{ fontSize: "clamp(36px, 5vw, 58px)", fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.03em", marginBottom: 24, color: "#fff" }}>
-            Your plan set becomes a<br />
-            <span style={{ color: "#22c55e" }}>structured shop order</span><br />
-            in 2 minutes.
+          <h1 style={{ fontSize: "clamp(28px,5vw,52px)", fontWeight: 800, lineHeight: 1.1, margin: "0 0 20px" }}>
+            Full project takeoff,
+            <br />
+            <span style={{ background: "linear-gradient(135deg,#22d3ee,#6366f1,#a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+              every room, one upload.
+            </span>
           </h1>
-          <p style={{ fontSize: 18, color: "#94a3b8", lineHeight: 1.7, maxWidth: 580, margin: "0 auto 40px", fontWeight: 400 }}>
-            Upload your architectural PDF. ProjMgtAI extracts every millwork scope item — cabinets, countertops, dimensions, materials, hardware — and delivers a structured Excel shop order with RFIs and WBS summary.
+          <p style={{ fontSize: 15, maxWidth: 480, margin: "0 auto 0", lineHeight: 1.7, opacity: 0.65 }}>
+            Upload your plan PDFs. AI groups pages by room, resolves material specs,
+            and delivers a bid-ready Excel workbook with WBS, RFIs, and cut sheets.
           </p>
-          <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
-            <Link href="/scope-extractor" style={{ display: "inline-block", padding: "16px 36px", background: "#22c55e", color: "#fff", borderRadius: 10, fontWeight: 800, fontSize: 16, textDecoration: "none", letterSpacing: "-0.01em" }}>
-              Extract my plan set →
-            </Link>
-            <Link href="/examples/millwork-plan-review" style={{ display: "inline-block", padding: "16px 28px", border: "1px solid rgba(255,255,255,0.12)", color: "#cbd5e1", borderRadius: 10, fontWeight: 600, fontSize: 15, textDecoration: "none" }}>
-              See a real example
-            </Link>
-          </div>
         </section>
 
-        {/* Stats bar */}
-        <section style={{ borderTop: "1px solid rgba(255,255,255,0.06)", borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.02)" }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 40px", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 0 }}>
-            {[
-              { n: "130+", label: "scope items per project" },
-              { n: "< 2 min", label: "extraction time" },
-              { n: "30+", label: "RFIs generated" },
-              { n: "12+", label: "rooms detected" },
-            ].map(({ n, label }, i) => (
-              <div key={label} style={{ textAlign: "center", padding: "8px 20px", borderRight: i < 3 ? "1px solid rgba(255,255,255,0.06)" : "none" }}>
-                <div style={{ fontSize: 28, fontWeight: 800, color: "#22c55e", letterSpacing: "-0.02em" }}>{n}</div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{label}</div>
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* Upload form */}
+        <section style={{ padding: "0 20px 80px" }}>
+          <div style={{ maxWidth: 600, margin: "0 auto", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, padding: "32px 36px" }}>
 
-        {/* What you get */}
-        <section style={{ maxWidth: 900, margin: "0 auto", padding: "72px 40px" }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 8, color: "#fff" }}>What you get</h2>
-          <p style={{ color: "#64748b", fontSize: 15, marginBottom: 48 }}>Six structured outputs in a single Excel download.</p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-            {[
-              { title: "All Items", desc: "Every scope item with type, room, dimensions, material, and confidence score", icon: "▦" },
-              { title: "WBS Summary", desc: "Trade hierarchy — Cabinetry, Countertops, Shelving, Panels, Trim, Hardware", icon: "≡" },
-              { title: "RFI Log", desc: "30+ pre-bid RFIs: missing dims, undefined materials, scope exclusions, sheet refs", icon: "⚑" },
-              { title: "Bid Checklist", desc: "Per-room checklist: blocking, hardware, ADA, dimensions — OK / VERIFY / MISSING", icon: "✓" },
-              { title: "Per-Room Tabs", desc: "One tab per room with items scoped to that assembly", icon: "◫" },
-              { title: "Project Summary", desc: "File inventory, page count, room results, extraction stats", icon: "◎" },
-            ].map(({ title, desc, icon }) => (
-              <div key={title} style={{ padding: "24px", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, background: "rgba(255,255,255,0.02)" }}>
-                <div style={{ fontSize: 20, marginBottom: 12, color: "#22c55e" }}>{icon}</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 8 }}>{title}</div>
-                <div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.6 }}>{desc}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* How it works */}
-        <section style={{ background: "rgba(255,255,255,0.02)", borderTop: "1px solid rgba(255,255,255,0.06)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", padding: "72px 40px" }}>
-            <h2 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 48, color: "#fff" }}>How it works</h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 32 }}>
-              {[
-                { step: "1", title: "Upload your plan set", desc: "Drop your PDFs — plans, specs, addenda, shop drawings. Multi-file, up to 150MB. Scanned drawings supported." },
-                { step: "2", title: "AI reads every page", desc: "Claude reads every sheet, groups pages by room, extracts scope items with dimensions, materials, and sheet references." },
-                { step: "3", title: "Download your shop order", desc: "Excel workbook with 6 tabs: all items, per-room breakdown, WBS summary, bid checklist, RFI log, project summary." },
-              ].map(({ step, title, desc }) => (
-                <div key={step} style={{ position: "relative" }}>
-                  <div style={{ width: 36, height: 36, background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.25)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800, color: "#22c55e", marginBottom: 16 }}>{step}</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f1f5f9", marginBottom: 8 }}>{title}</div>
-                  <div style={{ fontSize: 14, color: "#64748b", lineHeight: 1.7 }}>{desc}</div>
+            {status === "done" ? (
+              <div style={{ textAlign: "center", padding: "32px 0" }}>
+                <div style={{ fontSize: 44, marginBottom: 16 }}>✅</div>
+                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+                  Upload received
                 </div>
-              ))}
-            </div>
-            <div style={{ marginTop: 48, textAlign: "center" }}>
-              <Link href="/how-it-works" style={{ fontSize: 14, color: "#22c55e", textDecoration: "none", fontWeight: 600 }}>
-                Full technical details →
-              </Link>
-            </div>
+                <div style={{ fontSize: 14, opacity: 0.6, marginBottom: 28, lineHeight: 1.7 }}>
+                  Your extraction is running. Check{" "}
+                  <strong style={{ color: "#e2e8f0" }}>{email}</strong> for the results
+                  link — usually within 2-3 minutes.
+                </div>
+                <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+                  <Link href="/scope-extractor" style={{ display: "inline-block", padding: "12px 28px", background: "linear-gradient(135deg,#22d3ee,#6366f1)", color: "#0a0e1a", borderRadius: 8, fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
+                    Open Scope Extractor
+                  </Link>
+                  <button onClick={reset} style={{ padding: "12px 28px", background: "none", border: "1px solid rgba(255,255,255,0.15)", color: "#e2e8f0", borderRadius: 8, fontSize: 13, cursor: "pointer" }}>
+                    Upload Another
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Contact fields */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, opacity: 0.5, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>Email *</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@company.com"
+                      style={{ width: "100%", padding: "10px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, opacity: 0.5, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>Company *</label>
+                    <input
+                      type="text"
+                      value={company}
+                      onChange={(e) => setCompany(e.target.value)}
+                      placeholder="North County Cabinetry"
+                      style={{ width: "100%", padding: "10px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, opacity: 0.5, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>Project Name</label>
+                    <input
+                      type="text"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      placeholder="24hr Fitness Navajo"
+                      style={{ width: "100%", padding: "10px 12px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, opacity: 0.5, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>Project Type</label>
+                    <select
+                      value={projectType}
+                      onChange={(e) => setProjectType(e.target.value)}
+                      style={{ width: "100%", padding: "10px 12px", background: "#141720", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#e2e8f0", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    >
+                      {PROJECT_TYPES.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Drop zone */}
+                <div
+                  onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer.files); }}
+                  onDragOver={(e) => e.preventDefault()}
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ border: "2px dashed rgba(34,211,238,0.25)", borderRadius: 10, padding: entries.length > 0 ? "20px 20px 12px" : "36px 20px", cursor: "pointer", marginBottom: 16, transition: "border-color 0.2s" }}
+                >
+                  <input ref={fileInputRef} type="file" accept=".pdf" multiple onChange={(e) => handleFiles(e.target.files)} style={{ display: "none" }} />
+
+                  {entries.length === 0 ? (
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 28, marginBottom: 10 }}>📎</div>
+                      <div style={{ fontSize: 14, color: "#22d3ee", fontWeight: 600, marginBottom: 4 }}>
+                        Drop PDFs here <span style={{ opacity: 0.5, color: "#e2e8f0", fontWeight: 400 }}>or click to browse</span>
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.4 }}>Plans, specs, addenda — up to 150 MB combined</div>
+                    </div>
+                  ) : (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      {entries.map((entry, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "8px 10px", background: "rgba(34,211,238,0.06)", borderRadius: 6 }}>
+                          <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: 0.9 }}>
+                            📄 {entry.file.name}
+                            <span style={{ opacity: 0.45, marginLeft: 6 }}>
+                              ({(entry.file.size / 1024).toFixed(0)} KB)
+                            </span>
+                          </span>
+                          <select
+                            value={entry.tag}
+                            onChange={(e) => { e.stopPropagation(); updateTag(i, e.target.value); }}
+                            style={{ padding: "4px 8px", background: "#141720", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 5, color: "#e2e8f0", fontSize: 12 }}
+                          >
+                            {FILE_TAGS.map((t) => <option key={t}>{t}</option>)}
+                          </select>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); removeEntry(i); }}
+                            style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 4px" }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                      <div
+                        onClick={() => fileInputRef.current?.click()}
+                        style={{ fontSize: 12, color: "#22d3ee", opacity: 0.7, cursor: "pointer", textAlign: "center", paddingTop: 4 }}
+                      >
+                        + Add more files
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {entries.length > 0 && (
+                  <div style={{ fontSize: 12, opacity: 0.4, marginBottom: 16, textAlign: "right" }}>
+                    {entries.length} file{entries.length !== 1 ? "s" : ""} — {totalMB.toFixed(1)} MB
+                    {totalMB > 150 && (
+                      <span style={{ color: "#ef4444", marginLeft: 8 }}>exceeds 150 MB limit</span>
+                    )}
+                  </div>
+                )}
+
+                {errorMsg && (
+                  <div style={{ fontSize: 13, color: "#ef4444", marginBottom: 14, padding: "10px 14px", background: "rgba(239,68,68,0.08)", borderRadius: 7 }}>
+                    {errorMsg}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleSubmit}
+                  disabled={status === "uploading" || totalMB > 150}
+                  style={{ width: "100%", padding: "14px", background: status === "uploading" ? "rgba(255,255,255,0.1)" : "linear-gradient(135deg,#22d3ee,#6366f1)", color: "#0a0e1a", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: status === "uploading" ? "wait" : "pointer" }}
+                >
+                  {status === "uploading" ? "Uploading..." : "Submit for Extraction →"}
+                </button>
+
+                <p style={{ textAlign: "center", marginTop: 14, fontSize: 12, opacity: 0.4 }}>
+                  Results emailed within 2-3 minutes.{" "}
+                  <Link href="/scope-extractor" style={{ color: "#22d3ee", textDecoration: "none", opacity: 0.8 }}>
+                    Run extraction yourself instead →
+                  </Link>
+                </p>
+              </>
+            )}
           </div>
         </section>
 
-        {/* Who it's for */}
-        <section style={{ maxWidth: 900, margin: "0 auto", padding: "72px 40px" }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 8, color: "#fff" }}>Built for the people who read plans</h2>
-          <p style={{ color: "#64748b", fontSize: 15, marginBottom: 48, maxWidth: 560 }}>If you spend hours manually extracting scope from architectural drawings, this is for you.</p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+        {/* Feature strip */}
+        <section style={{ padding: "0 40px 80px" }}>
+          <div style={{ maxWidth: 860, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 16 }}>
             {[
-              { role: "Millwork contractors", desc: "Turn a 100-page plan set into a complete bid scope in 2 minutes instead of 6 hours." },
-              { role: "Estimators", desc: "Get a structured first draft with RFIs pre-flagged. Spend your time verifying, not transcribing." },
-              { role: "Project managers", desc: "WBS summary and bid checklist ready before the first team meeting." },
-            ].map(({ role, desc }) => (
-              <div key={role} style={{ padding: "24px", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e", marginBottom: 8 }}>{role}</div>
-                <div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.7 }}>{desc}</div>
+              ["📋", "All Items", "Every scope item extracted by room with dims and materials"],
+              ["🗂", "WBS Summary", "Trade hierarchy — cabinetry, countertops, shelving, hardware"],
+              ["✅", "Bid Checklist", "Blocking, ADA, hardware, and finish flagged per room"],
+              ["🔍", "RFI Log", "Missing scope, dims, and material gaps auto-detected"],
+              ["✂", "Parts List", "AWI 300 cut sheet — part, qty, L x W x T, material"],
+            ].map(([icon, title, desc]) => (
+              <div key={title as string} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "20px 20px 18px" }}>
+                <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{title}</div>
+                <div style={{ fontSize: 12, opacity: 0.5, lineHeight: 1.6 }}>{desc}</div>
               </div>
             ))}
           </div>
         </section>
 
-        {/* Real project proof */}
-        <section style={{ background: "rgba(34,197,94,0.04)", borderTop: "1px solid rgba(34,197,94,0.12)", borderBottom: "1px solid rgba(34,197,94,0.12)" }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", padding: "72px 40px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 60, alignItems: "center" }}>
-            <div>
-              <div style={{ fontSize: 12, color: "#86efac", fontWeight: 600, letterSpacing: "0.04em", marginBottom: 16 }}>REAL PROJECT RESULT</div>
-              <h2 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff", marginBottom: 16, lineHeight: 1.3 }}>24 Hour Fitness — Navajo, San Diego</h2>
-              <p style={{ color: "#64748b", fontSize: 14, lineHeight: 1.7, marginBottom: 24 }}>101 pages across 4 PDF files. 12 rooms detected. Extracted in 97 seconds.</p>
-              <Link href="/examples/millwork-plan-review" style={{ fontSize: 14, color: "#22c55e", textDecoration: "none", fontWeight: 600 }}>
-                See the full extraction →
-              </Link>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {[
-                { n: "132", label: "scope items" },
-                { n: "30", label: "RFIs generated" },
-                { n: "71", label: "items with dims" },
-                { n: "12", label: "rooms" },
-              ].map(({ n, label }) => (
-                <div key={label} style={{ padding: "20px", background: "rgba(0,0,0,0.3)", borderRadius: 10, border: "1px solid rgba(34,197,94,0.15)", textAlign: "center" }}>
-                  <div style={{ fontSize: 26, fontWeight: 800, color: "#22c55e", letterSpacing: "-0.02em" }}>{n}</div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{label}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Blog */}
-        <section style={{ maxWidth: 900, margin: "0 auto", padding: "72px 40px" }}>
-          <h2 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 8, color: "#fff" }}>From the blog</h2>
-          <p style={{ color: "#64748b", fontSize: 15, marginBottom: 40 }}>Practical guides for millwork contractors and estimators.</p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 32 }}>
-            {[
-              { slug: "missing-scope-construction", title: "Why Construction Bids Miss Scope", excerpt: "Where scope gaps hide in plan sets — and how to catch them before bid day." },
-              { slug: "rfi-examples-construction", title: "Top RFIs to Catch Before Bidding", excerpt: "The RFIs that should never reach the field — and how to generate them automatically." },
-              { slug: "millwork-estimating-checklist", title: "Millwork Estimating Checklist", excerpt: "What experienced estimators check before submitting. Print it. Use it every time." },
-            ].map(({ slug, title, excerpt }) => (
-              <Link key={slug} href={`/blog/${slug}`} style={{ textDecoration: "none", display: "block", padding: "20px", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, background: "rgba(255,255,255,0.02)" }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 8, lineHeight: 1.4 }}>{title}</div>
-                <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6, marginBottom: 16 }}>{excerpt}</div>
-                <div style={{ fontSize: 12, color: "#22c55e", fontWeight: 600 }}>Read more →</div>
-              </Link>
-            ))}
-          </div>
-        </section>
-
-        {/* CTA */}
-        <section style={{ background: "rgba(34,197,94,0.06)", borderTop: "1px solid rgba(34,197,94,0.15)" }}>
-          <div style={{ maxWidth: 700, margin: "0 auto", padding: "80px 40px", textAlign: "center" }}>
-            <h2 style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff", marginBottom: 16, lineHeight: 1.2 }}>
-              Run your next plan set through it.
-            </h2>
-            <p style={{ color: "#64748b", fontSize: 16, marginBottom: 36, lineHeight: 1.7 }}>
-              Free to try. No account required. Upload your plans and see what it finds in under 2 minutes.
-            </p>
-            <Link href="/scope-extractor" style={{ display: "inline-block", padding: "18px 44px", background: "#22c55e", color: "#fff", borderRadius: 10, fontWeight: 800, fontSize: 17, textDecoration: "none", letterSpacing: "-0.01em" }}>
-              Open Scope Extractor →
-            </Link>
-            <div style={{ marginTop: 20, fontSize: 13, color: "#475569" }}>
-              Looking to test with your own projects?{" "}
-              <a href="mailto:greinhold@rewmo.ai" style={{ color: "#22c55e", textDecoration: "none" }}>Get in touch</a>
-            </div>
-          </div>
-        </section>
-
-        {/* Footer */}
-        <footer style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "32px 40px" }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
-            <div style={{ fontWeight: 800, fontSize: 15, color: "#fff" }}>ProjMgtAI</div>
-            <div style={{ display: "flex", gap: 24, fontSize: 13, color: "#475569" }}>
-              <Link href="/scope-extractor" style={{ color: "#475569", textDecoration: "none" }}>Scope Extractor</Link>
-              <Link href="/how-it-works" style={{ color: "#475569", textDecoration: "none" }}>How it works</Link>
-              <Link href="/schema" style={{ color: "#475569", textDecoration: "none" }}>Schema</Link>
-              <Link href="/blog" style={{ color: "#475569", textDecoration: "none" }}>Blog</Link>
-              <Link href="/api/sample-output" style={{ color: "#475569", textDecoration: "none" }}>API</Link>
-            </div>
-            <div style={{ fontSize: 12, color: "#334155" }}>© 2026 ProjMgtAI</div>
-          </div>
+        <footer style={{ textAlign: "center", padding: "32px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 12, opacity: 0.35 }}>
+          ProjMgtAI - Centriv AI - Fullerton CA
         </footer>
-
-      </div>
+      </main>
     </>
   );
 }
