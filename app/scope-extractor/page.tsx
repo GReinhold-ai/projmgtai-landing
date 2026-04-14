@@ -22,12 +22,52 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // v14.9.34: Post-download feedback capture
+  const [feedbackEmail, setFeedbackEmail] = useState("");
+  const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
+  const [feedbackNote, setFeedbackNote] = useState("");
+  const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "sent">("idle");
+  const downloadLinkRef = useRef<HTMLAnchorElement>(null);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const d = e.dataTransfer.files[0];
     if (d?.type === "application/pdf") { setFile(d); setError(""); }
     else setError("Please drop a PDF file.");
   }, []);
+
+  // v14.9.34: Auto-trigger download when resultUrl appears
+  const prevResultUrl = useRef<string | null>(null);
+  if (resultUrl && resultUrl !== prevResultUrl.current) {
+    prevResultUrl.current = resultUrl;
+    // Programmatic click fires after render via the ref
+    setTimeout(() => downloadLinkRef.current?.click(), 100);
+  }
+
+  async function submitFeedback() {
+    if (!feedbackEmail || feedbackRating === null) return;
+    setFeedbackStatus("sending");
+    try {
+      await fetch("/api/process-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: feedbackEmail,
+          company: "scope-extractor",
+          project_name: file?.name?.replace(".pdf", "") || "unknown",
+          project_type: "feedback",
+          blob_urls: [],
+          feedback: {
+            rating: feedbackRating,
+            note: feedbackNote,
+            items: stats?.totalItems,
+            rooms: stats?.roomCount,
+          },
+        }),
+      });
+    } catch (_) { /* non-fatal */ }
+    setFeedbackStatus("sent");
+  }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -566,19 +606,73 @@ export default function HomePage() {
 
           {status === "done" && resultUrl && (
             <div style={{ padding:"24px 0" }}>
-              <div style={{ fontSize:40, marginBottom:16 }}>✅</div>
-              <div style={{ fontSize:16, fontWeight:700, marginBottom:8 }}>Extraction Complete</div>
+              <div style={{ fontSize:40, marginBottom:12 }}>✅</div>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>Extraction Complete</div>
               {stats && (
-                <div style={{ fontSize:12, opacity:0.6, marginBottom:20, lineHeight:1.8 }}>
+                <div style={{ fontSize:12, opacity:0.6, marginBottom:16, lineHeight:1.8 }}>
                   {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
-              <a href={resultUrl} download={`shop_order_v14931_${file?.name?.replace(".pdf","")}.xlsx`}
-                style={{ display:"inline-block", padding:"14px 32px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:12 }}>
+              {/* Hidden auto-download anchor — clicked programmatically */}
+              <a ref={downloadLinkRef} href={resultUrl}
+                download={`shop_order_v14934_${file?.name?.replace(".pdf","")}.xlsx`}
+                style={{ display:"none" }} aria-hidden="true" />
+              {/* Visible download button as fallback */}
+              <a href={resultUrl} download={`shop_order_v14934_${file?.name?.replace(".pdf","")}.xlsx`}
+                style={{ display:"inline-block", padding:"13px 28px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:20 }}>
                 Download Excel
-              </a><br/>
-              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", marginTop:8, fontFamily:"inherit" }}>Extract Another</button>
+              </a>
+
+              {/* Feedback banner */}
+              {feedbackStatus !== "sent" ? (
+                <div style={{ background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:10, padding:"18px 20px", textAlign:"left", marginBottom:16 }}>
+                  <div style={{ fontSize:13, fontWeight:600, marginBottom:12, color:"#e2e8f0" }}>
+                    How accurate was the extraction?
+                  </div>
+                  {/* Star rating */}
+                  <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+                    {[1,2,3,4,5].map(n => (
+                      <button key={n} onClick={() => setFeedbackRating(n)}
+                        style={{ fontSize:22, background:"none", border:"none", cursor:"pointer", opacity: feedbackRating && feedbackRating >= n ? 1 : 0.25, transition:"opacity 0.1s" }}>
+                        ★
+                      </button>
+                    ))}
+                    {feedbackRating && (
+                      <span style={{ fontSize:12, opacity:0.5, alignSelf:"center", marginLeft:4 }}>
+                        {["","Poor","Fair","Good","Great","Perfect"][feedbackRating]}
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={feedbackNote}
+                    onChange={e => setFeedbackNote(e.target.value)}
+                    placeholder="What was missing or wrong? (optional)"
+                    style={{ width:"100%", padding:"9px 12px", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#e2e8f0", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:10 }}
+                  />
+                  <div style={{ display:"flex", gap:8 }}>
+                    <input
+                      type="email"
+                      value={feedbackEmail}
+                      onChange={e => setFeedbackEmail(e.target.value)}
+                      placeholder="your@email.com (to follow up)"
+                      style={{ flex:1, padding:"9px 12px", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#e2e8f0", fontSize:13, outline:"none" }}
+                    />
+                    <button onClick={submitFeedback}
+                      disabled={!feedbackEmail || feedbackRating === null || feedbackStatus === "sending"}
+                      style={{ padding:"9px 18px", background: feedbackEmail && feedbackRating ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#22d3ee", fontSize:13, cursor: feedbackEmail && feedbackRating ? "pointer" : "default", fontFamily:"inherit", whiteSpace:"nowrap" }}>
+                      {feedbackStatus === "sending" ? "..." : "Send"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize:13, color:"#22c55e", marginBottom:16, padding:"12px 16px", background:"rgba(34,197,94,0.08)", borderRadius:8 }}>
+                  Thanks for the feedback — it goes straight into training data.
+                </div>
+              )}
+
+              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Extract Another</button>
             </div>
           )}
 
