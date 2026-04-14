@@ -1,20 +1,11 @@
-// pages/api/process-upload.ts  v14.9.31
-// Fix 1: Supabase insert simplified to existing columns only (clears PGRST204)
-// Fix 2: sendConfirmationEmail rewritten from scratch, ASCII only (no Unicode/em-dash)
-// Fix 3: reply_to changed to greinhold@rewmo.ai (gary@projmgt.ai forward is broken)
+// pages/api/process-upload.ts  v14.9.32
+// Receives JSON metadata + Vercel Blob URLs (no binary PDFs).
+// Binary upload goes directly browser -> Vercel Blob via blob-upload-token.ts.
+// This keeps the payload tiny and avoids the 4.5MB serverless limit.
 //
 // Deploy to: pages/api/process-upload.ts AND src/pages/api/process-upload.ts
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import formidable, { Fields, Files } from "formidable";
-import fs from "fs";
-import path from "path";
-
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
 
 // -- Supabase REST helper --------------------------------------------------
 async function supabaseInsert(table: string, record: Record<string, unknown>) {
@@ -38,10 +29,7 @@ async function supabaseInsert(table: string, record: Record<string, unknown>) {
   return res.json();
 }
 
-// -- Confirmation email (ASCII only, no Unicode) ---------------------------
-// Rewritten from scratch to avoid PowerShell UTF-8 encoding issues.
-// Rules: no em-dash, no smart quotes, no bullet points, no emoji.
-// Use plain hyphens (-) and straight ASCII only.
+// -- Confirmation email (ASCII only) --------------------------------------
 async function sendConfirmationEmail(
   to: string,
   company: string,
@@ -190,46 +178,6 @@ async function sendConfirmationEmail(
   }
 }
 
-// -- Fire-and-forget extraction -------------------------------------------
-async function fireExtraction(
-  uploadId: string,
-  filePaths: string[],
-  fileTags: Record<string, string>,
-  metadata: {
-    email: string;
-    company: string;
-    projectName: string;
-    projectType: string;
-  }
-) {
-  const form = new FormData();
-  form.append("upload_id", uploadId);
-  form.append("email", metadata.email);
-  form.append("company", metadata.company);
-  form.append("project_name", metadata.projectName);
-  form.append("project_type", metadata.projectType);
-  form.append("supabase_url", process.env.SUPABASE_URL!);
-  form.append("supabase_key", process.env.SUPABASE_ANON_KEY!);
-  form.append("sendgrid_key", process.env.SENDGRID_API_KEY!);
-  form.append("sendgrid_from", process.env.SENDGRID_FROM_EMAIL || "outreach@projmgt.ai");
-
-  for (const filePath of filePaths) {
-    const filename = path.basename(filePath);
-    const tag = fileTags[filename] || "Plans";
-    const buffer = fs.readFileSync(filePath);
-    const blob = new Blob([buffer], { type: "application/pdf" });
-    form.append("files", blob, filename);
-    form.append(`tag_${filename}`, tag);
-  }
-
-  fetch(`${process.env.EXTRACTION_API_URL}/extract-and-deliver`, {
-    method: "POST",
-    body: form,
-  }).catch((err) => {
-    console.error(`[process-upload] Extraction fire failed for ${uploadId}:`, err);
-  });
-}
-
 // -- Main handler ---------------------------------------------------------
 export default async function handler(
   req: NextApiRequest,
@@ -239,79 +187,48 @@ export default async function handler(
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const form = formidable({
-    maxFileSize: 150 * 1024 * 1024,
-    maxFiles: 8,
-    keepExtensions: true,
-  });
-
-  let fields: Fields;
-  let files: Files;
-
-  try {
-    [fields, files] = await new Promise<[Fields, Files]>((resolve, reject) => {
-      form.parse(req, (err, f, fi) => {
-        if (err) reject(err);
-        else resolve([f, fi]);
-      });
-    });
-  } catch (err) {
-    console.error("[process-upload] Form parse error:", err);
-    return res.status(400).json({ error: "Failed to parse upload" });
-  }
-
-  const email       = Array.isArray(fields.email)        ? fields.email[0]        : fields.email        || "";
-  const company     = Array.isArray(fields.company)      ? fields.company[0]      : fields.company      || "";
-  const projectType = Array.isArray(fields.project_type) ? fields.project_type[0] : fields.project_type || "";
-  const projectName = Array.isArray(fields.project_name) ? fields.project_name[0] : fields.project_name
-    || `${company} Project`;
+  // Now receives JSON — no binary, no formidable needed
+  const {
+    email,
+    company,
+    project_name: projectName,
+    project_type: projectType,
+    blob_urls: blobUrls,      // array of { url, filename, tag }
+  } = req.body || {};
 
   if (!email || !company) {
     return res.status(400).json({ error: "Email and company are required" });
   }
 
-  const uploadedFiles = Array.isArray(files.files)
-    ? files.files
-    : files.files ? [files.files] : [];
-  const filePaths = uploadedFiles.map((f) => f.filepath);
-  const fileNames = uploadedFiles.map((f) => f.originalFilename || path.basename(f.filepath));
-
-  const fileTags: Record<string, string> = {};
-  for (const filename of fileNames) {
-    const tagKey = `tag_${filename}`;
-    const tagVal = Array.isArray(fields[tagKey]) ? fields[tagKey]![0] : fields[tagKey];
-    fileTags[filename] = tagVal || "Plans";
-  }
-
   const uploadId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const resolvedProjectName = projectName || `${company} Project`;
 
-  // Fix 1: simplified insert — only columns confirmed to exist in schema
+  // 1. Log to Supabase — simplified to existing columns only
   try {
     await supabaseInsert("uploads", {
       user_email: email,
       company,
-      project_type: projectType,
+      project_type: projectType || "",
     });
   } catch (err) {
     console.error("[process-upload] Supabase log failed:", err);
-    // Non-fatal — continue
+    // Non-fatal
   }
 
-  // Fix 2 + 3: clean email, corrected reply_to
+  // 2. Send confirmation email
   try {
-    await sendConfirmationEmail(email, company, projectName);
+    await sendConfirmationEmail(email, company, resolvedProjectName);
   } catch (err) {
     console.error("[process-upload] Confirmation email failed:", err);
     // Non-fatal
   }
 
-  if (filePaths.length > 0) {
-    fireExtraction(uploadId, filePaths, fileTags, {
-      email,
-      company,
-      projectName,
-      projectType,
-    });
+  // 3. Log blob URLs for future extraction pipeline
+  if (blobUrls && blobUrls.length > 0) {
+    console.log(`[process-upload] ${uploadId}: ${blobUrls.length} files uploaded to Blob:`);
+    for (const b of blobUrls) {
+      console.log(`  [${b.tag}] ${b.filename} -> ${b.url}`);
+    }
   }
 
   return res.status(200).json({
