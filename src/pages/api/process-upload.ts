@@ -87,7 +87,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                 </td></tr>
                 ${[
                   ["All Items tab", "Every millwork item extracted by room"],
-                  ["WBS Summary", "Trade hierarchy - cabinetry, countertops, shelvingng"],
+                  ["WBS Summary", "Trade hierarchy - cabinetry, countertops, shelving"],
                   ["Bid Checklist", "Blocking, hardware, ADA, finish â€” flagged by room"],
                   ["RFI Log", "Missing scope, dims, and material gaps"],
                 ].map(([icon, title, desc]) => `
