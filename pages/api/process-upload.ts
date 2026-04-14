@@ -76,11 +76,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
             <td style="padding:28px 40px;">
               <p style="margin:0 0 20px;font-size:14px;color:#9098a8;line-height:1.7;">
                 Hi ${company},<br><br>
-                We've received your upload for <strong style="color:#f0ede8;">${projectName}</strong> and 
-                ready for you to run. Click the button below -- it takes about 2 minutes.</strong>.minutes</strong>.
-              </p>
-
-              <!-- What's in the workbook -->
+                We've received your upload for <strong style="color:#f0ede8;">${projectName}</strong> and ready for you to run. Click the button below -- it takes about 2 minutes.            <!-- What's in the workbook -->
               <table width="100%" cellpadding="0" cellspacing="0" style="background:#141720;border:1px solid #1e2130;border-radius:3px;margin-bottom:24px;">
                 <tr><td style="padding:14px 16px 8px;">
                   <p style="margin:0 0 10px;font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.15em;color:#454858;text-transform:uppercase;">What's in your workbook</p>
@@ -88,9 +84,9 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                 ${[
                   ["All Items tab", "Every millwork item extracted by room"],
                   ["WBS Summary", "Trade hierarchy - cabinetry, countertops, shelving"],
-                  ["Bid Checklist", "Blocking, hardware, ADA, finish â€” flagged by room"],
+                  ["Bid Checklist", "Blocking, hardware, ADA, finish -- flagged by roomy room"],
                   ["RFI Log", "Missing scope, dims, and material gaps"],
-                ].map(([icon, title, desc]) => `
+                ].map(([title, desc]) => `
                 <tr><td style="padding:4px 16px 10px;">
                   <p style="margin:0;font-size:13px;color:#9098a8;">
                     ${icon} <strong style="color:#f0ede8;">${title}</strong> â€” ${desc}
