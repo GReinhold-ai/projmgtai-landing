@@ -84,7 +84,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                 ${[
                   ["All Items tab", "Every millwork item extracted by room"],
                   ["WBS Summary", "Trade hierarchy - cabinetry, countertops, shelving"],
-                  ["Bid Checklist", "Blocking, hardware, ADA, finish -- flagged by roomy room"],
+                  ["Bid Checklist", "Blocking, hardware, ADA, finish -- flagged by room"],
                   ["RFI Log", "Missing scope, dims, and material gaps"],
                 ].map(([title, desc]) => `
                 <tr><td style="padding:4px 16px 10px;">
@@ -110,7 +110,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
           <tr>
             <td style="padding:20px 40px;">
               <p style="margin:0;font-family:'Courier New',monospace;font-size:10px;color:#2a2d3a;letter-spacing:0.08em;">
-                // PROJMGT.AI Â· CENTRIV AI Â· FULLERTON CA<br>
+                // PROJMGT.AI - CENTRIV AI - FULLERTON CA<br>
                 // YOU'RE RECEIVING THIS BECAUSE YOU SUBMITTED A PLAN SET
               </p>
             </td>
