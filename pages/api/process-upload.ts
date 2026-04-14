@@ -141,8 +141,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
         name: "Gary Reinhold | ProjMgt.AI",
       },
       reply_to: { email: "gary@projmgt.ai" },
-      subject: `Your millwork extraction is running â€” ${projectName}`,
-      content: [{ type: "text/html", value: html }],
+      subject: `Your millwork extraction is running - ${projectName}`,   content: [{ type: "text/html", value: html }],
     }),
   });
 
@@ -246,7 +245,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     await supabaseInsert("uploads", {
       id: uploadId,
-      email,
+      user_email: email,
       company,
       project_type: projectType,
       project_name: projectName,
