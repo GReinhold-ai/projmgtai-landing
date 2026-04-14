@@ -77,8 +77,7 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
               <p style="margin:0 0 20px;font-size:14px;color:#9098a8;line-height:1.7;">
                 Hi ${company},<br><br>
                 We've received your upload for <strong style="color:#f0ede8;">${projectName}</strong> and 
-                kicked off the extraction pipeline. Your Excel workbook will arrive at this address 
-                in the next <strong style="color:#c8922a;">2â€“5 minutes</strong>.
+                ready for you to run. Click the button below -- it takes about 2 minutes.</strong>.minutes</strong>.
               </p>
 
               <!-- What's in the workbook -->
@@ -87,10 +86,10 @@ async function sendConfirmationEmail(to: string, company: string, projectName: s
                   <p style="margin:0 0 10px;font-family:'Courier New',monospace;font-size:10px;letter-spacing:0.15em;color:#454858;text-transform:uppercase;">What's in your workbook</p>
                 </td></tr>
                 ${[
-                  ["ðŸ“‹", "All Items tab", "Every millwork item extracted by room"],
-                  ["ðŸ—ï¸", "WBS Summary", "Trade hierarchy â€” cabinetry, countertops, shelving"],
-                  ["âœ…", "Bid Checklist", "Blocking, hardware, ADA, finish â€” flagged by room"],
-                  ["âš ï¸", "RFI Log", "Missing scope, dims, and material gaps"],
+                  ["All Items tab", "Every millwork item extracted by room"],
+                  ["WBS Summary", "Trade hierarchy - cabinetry, countertops, shelvingng"],
+                  ["Bid Checklist", "Blocking, hardware, ADA, finish â€” flagged by room"],
+                  ["RFI Log", "Missing scope, dims, and material gaps"],
                 ].map(([icon, title, desc]) => `
                 <tr><td style="padding:4px 16px 10px;">
                   <p style="margin:0;font-size:13px;color:#9098a8;">
