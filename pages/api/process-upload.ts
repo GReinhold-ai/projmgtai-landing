@@ -51,8 +51,8 @@ async function sendConfirmationEmail(
 
   const workbookRows = workbookItems.map(([title, desc]) =>
     `<tr>
-      <td style="padding:5px 14px 5px 0;font-size:13px;font-weight:600;color:#f0ede8;white-space:nowrap;vertical-align:top;">${title}</td>
-      <td style="padding:5px 0;font-size:13px;color:#9098a8;vertical-align:top;">${desc}</td>
+      <td style="padding:5px 14px 5px 0;font-size:13px;font-weight:600;color:#0F0F0E;white-space:nowrap;vertical-align:top;">${title}</td>
+      <td style="padding:5px 0;font-size:13px;color:#5A5850;vertical-align:top;">${desc}</td>
     </tr>`
   ).join("");
 
@@ -62,16 +62,16 @@ async function sendConfirmationEmail(
 <!--[if mso]>
 <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
   href="${ctaUrl}" style="height:44px;v-text-anchor:middle;width:200px;" arcsize="7%"
-  stroke="f" fillcolor="#c8922a">
+  stroke="f" fillcolor="#B8860B">
   <w:anchorlock/>
-  <center style="color:#0b0d14;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">
+  <center style="color:#FAFAF8;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">
     Run Extraction
   </center>
 </v:roundrect>
 <![endif]-->
 <!--[if !mso]><!-->
 <a href="${ctaUrl}"
-  style="background:#c8922a;border-radius:3px;color:#0b0d14;display:inline-block;
+  style="background:#B8860B;border-radius:4px;color:#ffffff;display:inline-block;
     font-family:Arial,sans-serif;font-size:14px;font-weight:700;
     line-height:44px;text-align:center;text-decoration:none;
     width:200px;-webkit-text-size-adjust:none;mso-hide:all;">
@@ -91,22 +91,22 @@ async function sendConfirmationEmail(
   <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
   <![endif]-->
 </head>
-<body style="margin:0;padding:0;background:#0b0d14;font-family:Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b0d14;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#FAFAF8;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#FAFAF8;padding:40px 20px;">
     <tr>
       <td align="center">
         <table width="560" cellpadding="0" cellspacing="0" border="0"
-          style="background:#0f1117;border:1px solid #1e2130;border-radius:4px;">
+          style="background:#ffffff;border:1px solid #E8E6E1;border-radius:4px;">
 
-          <tr><td height="3" bgcolor="#c8922a" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+          <tr><td height="3" bgcolor="#B8860B" style="font-size:0;line-height:0;">&nbsp;</td></tr>
 
           <tr>
-            <td style="padding:32px 40px 20px;">
+            <td style="padding:32px 40px 20px;background:#ffffff;">
               <p style="margin:0 0 6px 0;font-family:'Courier New',Courier,monospace;font-size:10px;
-                letter-spacing:3px;color:#c8922a;text-transform:uppercase;">
+                letter-spacing:3px;color:#B8860B;text-transform:uppercase;">
                 // ProjMgt.AI
               </p>
-              <h1 style="margin:0;font-size:26px;font-weight:700;color:#f0ede8;line-height:1.3;
+              <h1 style="margin:0;font-size:26px;font-weight:700;color:#0F0F0E;line-height:1.3;
                 font-family:Arial,sans-serif;">
                 Your extraction<br>link is ready.
               </h1>
@@ -116,21 +116,21 @@ async function sendConfirmationEmail(
           <tr>
             <td style="padding:0 40px;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr><td height="1" bgcolor="#1e2130" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+                <tr><td height="1" bgcolor="#E8E6E1" style="font-size:0;line-height:0;">&nbsp;</td></tr>
               </table>
             </td>
           </tr>
 
           <tr>
             <td style="padding:24px 40px 0 40px;">
-              <p style="margin:0 0 16px 0;font-size:14px;color:#9098a8;line-height:1.7;
+              <p style="margin:0 0 16px 0;font-size:14px;color:#5A5850;line-height:1.7;
                 font-family:Arial,sans-serif;">
                 Hi ${company},
               </p>
-              <p style="margin:0 0 24px 0;font-size:14px;color:#9098a8;line-height:1.7;
+              <p style="margin:0 0 24px 0;font-size:14px;color:#5A5850;line-height:1.7;
                 font-family:Arial,sans-serif;">
                 We received your upload for
-                <strong style="color:#f0ede8;">${projectName}</strong>.
+                <strong style="color:#0F0F0E;">${projectName}</strong>.
                 Click below to run your extraction. It takes about 2 minutes.
               </p>
             </td>
@@ -145,11 +145,11 @@ async function sendConfirmationEmail(
           <tr>
             <td style="padding:0 40px 8px 40px;">
               <p style="margin:0 0 10px 0;font-family:'Courier New',Courier,monospace;font-size:10px;
-                letter-spacing:2px;color:#454858;text-transform:uppercase;">
+                letter-spacing:2px;color:#8A8880;text-transform:uppercase;">
                 What is in your workbook
               </p>
               <table width="100%" cellpadding="0" cellspacing="0" border="0"
-                style="background:#141720;border:1px solid #1e2130;border-radius:3px;">
+                style="background:#F5F3EE;border:1px solid #E8E6E1;border-radius:3px;">
                 <tr>
                   <td style="padding:12px 16px;">
                     <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -163,14 +163,14 @@ async function sendConfirmationEmail(
 
           <tr>
             <td style="padding:16px 40px 24px 40px;">
-              <p style="margin:0 0 6px 0;font-size:13px;color:#5a6070;line-height:1.7;
+              <p style="margin:0 0 6px 0;font-size:13px;color:#8A8880;line-height:1.7;
                 font-family:Arial,sans-serif;">
                 Check spam? Reply to this email and we will resend.
               </p>
-              <p style="margin:0;font-size:13px;color:#5a6070;line-height:1.7;
+              <p style="margin:0;font-size:13px;color:#8A8880;line-height:1.7;
                 font-family:Arial,sans-serif;">
                 Questions? Email
-                <a href="mailto:gary@projmgt.ai" style="color:#c8922a;text-decoration:none;">
+                <a href="mailto:gary@projmgt.ai" style="color:#B8860B;text-decoration:none;">
                   gary@projmgt.ai
                 </a>
               </p>
@@ -180,7 +180,7 @@ async function sendConfirmationEmail(
           <tr>
             <td style="padding:0 40px;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr><td height="1" bgcolor="#1e2130" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+                <tr><td height="1" bgcolor="#E8E6E1" style="font-size:0;line-height:0;">&nbsp;</td></tr>
               </table>
             </td>
           </tr>
@@ -188,7 +188,7 @@ async function sendConfirmationEmail(
           <tr>
             <td style="padding:16px 40px;">
               <p style="margin:0;font-family:'Courier New',Courier,monospace;font-size:10px;
-                color:#2a2d3a;letter-spacing:1px;line-height:1.8;">
+                color:#C8C6C0;letter-spacing:1px;line-height:1.8;">
                 // PROJMGT.AI - CENTRIV AI - FULLERTON CA<br>
                 // YOU ARE RECEIVING THIS BECAUSE YOU SUBMITTED A PLAN SET
               </p>
@@ -238,33 +238,33 @@ async function sendFeedbackNotification(
   const html = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#0b0d14;font-family:Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b0d14;padding:32px 20px;">
+<body style="margin:0;padding:0;background:#FAFAF8;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#FAFAF8;padding:32px 20px;">
     <tr><td align="center">
       <table width="480" cellpadding="0" cellspacing="0" border="0"
-        style="background:#0f1117;border:1px solid #1e2130;border-radius:4px;">
-        <tr><td height="3" bgcolor="#6366f1" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+        style="background:#ffffff;border:1px solid #E8E6E1;border-radius:4px;">
+        <tr><td height="3" bgcolor="#B8860B" style="font-size:0;line-height:0;">&nbsp;</td></tr>
         <tr><td style="padding:24px 32px 8px 32px;">
-          <p style="margin:0 0 4px 0;font-family:'Courier New',monospace;font-size:10px;letter-spacing:3px;color:#6366f1;text-transform:uppercase;">
+          <p style="margin:0 0 4px 0;font-family:'Courier New',monospace;font-size:10px;letter-spacing:3px;color:#B8860B;text-transform:uppercase;">
             // ProjMgt.AI Feedback
           </p>
-          <h2 style="margin:0;font-size:20px;font-weight:700;color:#f0ede8;">
+          <h2 style="margin:0;font-size:20px;font-weight:600;color:#0F0F0E;">
             ${stars} ${label}
           </h2>
         </td></tr>
         <tr><td style="padding:12px 32px 20px 32px;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#141720;border:1px solid #1e2130;border-radius:3px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F5F3EE;border:1px solid #E8E6E1;border-radius:3px;">
             <tr><td style="padding:14px 16px;">
-              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
-                <strong style="color:#f0ede8;">From:</strong> ${fromEmail}
+              <p style="margin:0 0 8px 0;font-size:13px;color:#5A5850;">
+                <strong style="color:#0F0F0E;">From:</strong> ${fromEmail}
               </p>
-              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
-                <strong style="color:#f0ede8;">Project:</strong> ${projectName}
+              <p style="margin:0 0 8px 0;font-size:13px;color:#5A5850;">
+                <strong style="color:#0F0F0E;">Project:</strong> ${projectName}
               </p>
-              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
-                <strong style="color:#f0ede8;">Extraction:</strong> ${feedback.rooms || "?"} rooms, ${feedback.items || "?"} items
+              <p style="margin:0 0 8px 0;font-size:13px;color:#5A5850;">
+                <strong style="color:#0F0F0E;">Extraction:</strong> ${feedback.rooms || "?"} rooms, ${feedback.items || "?"} items
               </p>
-              ${feedback.note ? `<p style="margin:8px 0 0 0;font-size:13px;color:#f0ede8;border-top:1px solid #1e2130;padding-top:10px;">
+              ${feedback.note ? `<p style="margin:8px 0 0 0;font-size:13px;color:#0F0F0E;border-top:1px solid #E8E6E1;padding-top:10px;">
                 "${feedback.note}"
               </p>` : ""}
             </td></tr>

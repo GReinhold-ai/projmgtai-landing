@@ -5,6 +5,8 @@
 
 import { useState, useRef, useCallback } from "react";
 import Script from "next/script";
+import Head from "next/head";
+import Link from "next/link";
 // v14.9.31: Assembly decomposer — AWI 300 parts explosion
 import { decomposeItems, partsToAOA } from "./assembly-decomposer";
 
@@ -22,7 +24,7 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // v14.9.36-r2: Post-download feedback capture
+  // v14.9.36: Post-download feedback capture
   const [feedbackEmail, setFeedbackEmail] = useState("");
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackNote, setFeedbackNote] = useState("");
@@ -36,7 +38,7 @@ export default function HomePage() {
     else setError("Please drop a PDF file.");
   }, []);
 
-  // v14.9.36-r2: Auto-trigger download — flag ref fires once, never interferes with star clicks
+  // v14.9.36: Auto-trigger download — flag ref fires once, never interferes with star clicks
   const didAutoDownload = useRef(false);
   if (resultUrl && !didAutoDownload.current) {
     didAutoDownload.current = true;
@@ -546,51 +548,53 @@ export default function HomePage() {
   };
 
   return (
-    <main style={{ minHeight:"100vh", background:"linear-gradient(168deg,#0a0e1a 0%,#0f1729 40%,#111d2e 100%)", color:"#e2e8f0", fontFamily:"'JetBrains Mono','SF Mono','Fira Code',monospace" }}>
+    <main style={{ minHeight:"100vh", background:"#FAFAF8", color:"#0F0F0E", fontFamily:"'DM Sans',sans-serif" }}>
       <Script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"
         onLoad={() => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; setPdfReady(true); }} />
 
-      <nav style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"20px 40px", borderBottom:"1px solid rgba(255,255,255,0.06)" }}>
+      <nav style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0 48px", height:64, borderBottom:"1px solid #E8E6E1", background:"#FAFAF8" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:28, height:28, background:"linear-gradient(135deg,#22d3ee,#6366f1)", borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:700, color:"#0a0e1a" }}>P</div>
-          <span style={{ fontWeight:700, fontSize:16 }}>ProjMgtAI</span>
+          <div style={{ width:28, height:28, background:"#0F0F0E", borderRadius:5, display:"flex", alignItems:"center", justifyContent:"center" }}><span style={{ color:"#FAFAF8", fontSize:13, fontWeight:600, fontFamily:"'DM Mono',monospace" }}>P</span></div>
+          <span style={{ fontWeight:600, fontSize:15, color:"#0F0F0E" }}>ProjMgtAI</span>
         </div>
-        <span style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:13, opacity:0.7 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22c55e", boxShadow:"0 0 6px #22c55e" }} />v14.9.31 Live
-        </span>
+        <div style={{ display:"flex", alignItems:"center", gap:24 }}>
+          <a href="/pricing" style={{ fontSize:14, color:"#6B6860", textDecoration:"none" }}>Pricing</a>
+          <span style={{ fontSize:12, color:"#8A8880", fontFamily:"'DM Mono',monospace", display:"flex", alignItems:"center", gap:6 }}>
+            <span style={{ width:6, height:6, borderRadius:"50%", background:"#16a34a" }} />v14.9.38
+          </span>
       </nav>
 
-      <section style={{ textAlign:"center", padding:"80px 20px 60px" }}>
-        <div style={{ display:"inline-block", padding:"6px 16px", border:"1px solid rgba(34,211,238,0.3)", borderRadius:20, fontSize:12, color:"#22d3ee", marginBottom:24 }}>
-          v14.9.31 -- AWI 300 parts cut sheet, lead capture wired
+      <section style={{ textAlign:"center", padding:"72px 20px 56px" }}>
+        <div style={{ display:"inline-block", padding:"5px 12px", border:"1px solid #B8860B22", borderRadius:4, fontSize:11, color:"#B8860B", background:"#B8860B0F", marginBottom:24, fontFamily:"'DM Mono',monospace", letterSpacing:"0.1em", textTransform:"uppercase" }}>
+          Scope Extractor
         </div>
-        <h1 style={{ fontSize:"clamp(32px,5vw,56px)", fontWeight:800, lineHeight:1.1, margin:"0 0 20px", fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
+        <h1 style={{ fontSize:"clamp(32px,4.5vw,52px)", fontWeight:300, lineHeight:1.05, letterSpacing:"-0.025em", margin:"0 0 20px" }}>
           Full project takeoff,<br/>
-          <span style={{ background:"linear-gradient(135deg,#22d3ee,#6366f1,#a855f7)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>every room, one upload.</span>
+          <span style={{ fontWeight:600 }}>every room, one upload.</span>
         </h1>
-        <p style={{ fontSize:15, maxWidth:500, margin:"0 auto 36px", lineHeight:1.6, opacity:0.7 }}>
+        <p style={{ fontSize:15, maxWidth:500, margin:"0 auto 36px", lineHeight:1.7, color:"#5A5850" }}>
           Upload multi-page plan PDFs. AI groups pages by room, resolves material specs
           across sheets, then extracts each room with manufacturer part numbers.
         </p>
       </section>
 
       <section id="try" style={{ padding:"0 40px 100px", textAlign:"center" }}>
-        <div style={{ maxWidth:560, margin:"0 auto", background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:16, padding:32 }}>
+        <div style={{ maxWidth:560, margin:"0 auto", background:"#fff", border:"1px solid #E8E6E1", borderRadius:12, padding:32, boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
           {status === "idle" && (<>
             <div onDrop={handleDrop} onDragOver={e => e.preventDefault()} onClick={() => fileInputRef.current?.click()}
-              style={{ border:"2px dashed rgba(34,211,238,0.3)", borderRadius:12, padding:"48px 24px", cursor:"pointer", marginBottom: file ? 16 : 0 }}>
+              style={{ border:"2px dashed #D4D2CC", borderRadius:10, padding:"48px 24px", cursor:"pointer", marginBottom: file ? 16 : 0 }}>
               <div style={{ fontSize:32, marginBottom:12 }}>📎</div>
-              <div style={{ fontSize:14, color:"#22d3ee", fontWeight:600 }}>Drop a PDF here <span style={{ opacity:0.5, color:"#e2e8f0", fontWeight:400 }}>or click to browse</span></div>
-              <div style={{ fontSize:12, opacity:0.4, marginTop:8 }}>Multi-page plan sets supported</div>
+              <div style={{ fontSize:14, color:"#B8860B", fontWeight:500 }}>Drop a PDF here <span style={{ color:"#8A8880", fontWeight:400 }}>or click to browse</span></div>
+              <div style={{ fontSize:12, color:"#A8A69E", marginTop:8 }}>Multi-page plan sets supported</div>
             </div>
             <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display:"none" }} />
             {file && (<div style={{ marginTop:16 }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 16px", background:"rgba(34,211,238,0.08)", borderRadius:8, marginBottom:16 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 16px", background:"#F5F3EE", borderRadius:8, border:"1px solid #E8E6E1", marginBottom:16 }}>
                 <span style={{ fontSize:13 }}>📄 {file.name} <span style={{ opacity:0.5 }}>({(file.size/1024).toFixed(0)} KB)</span></span>
                 <button onClick={e => { e.stopPropagation(); reset(); }} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13 }}>✕</button>
               </div>
               <button onClick={handleExtract} disabled={!pdfReady}
-                style={{ width:"100%", padding:"14px", background: pdfReady ? "linear-gradient(135deg,#22d3ee,#6366f1)" : "rgba(255,255,255,0.1)", color:"#0a0e1a", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor: pdfReady?"pointer":"wait", fontFamily:"inherit" }}>
+                style={{ width:"100%", padding:"14px", background: pdfReady ? "#0F0F0E" : "#E8E6E1", color: pdfReady ? "#FAFAF8" : "#8A8880", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor: pdfReady?"pointer":"wait", fontFamily:"inherit" }}>
                 {pdfReady ? "Extract All Rooms -->" : "Loading PDF engine..."}
               </button>
             </div>)}
@@ -598,10 +602,9 @@ export default function HomePage() {
 
           {(status === "reading" || status === "analyzing" || status === "extracting" || status === "building") && (
             <div style={{ padding:"40px 0" }}>
-              <div style={{ width:48, height:48, border:"3px solid rgba(34,211,238,0.2)", borderTop:"3px solid #22d3ee", borderRadius:"50%", margin:"0 auto 20px", animation:"spin 1s linear infinite" }} />
-              <div style={{ fontSize:14, fontWeight:600 }}>{progress}</div>
-              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-            </div>
+              <div style={{ width:48, height:48, border:"3px solid #E8E6E1", borderTop:"3px solid #B8860B", borderRadius:"50%", margin:"0 auto 20px", animation:"spin 1s linear infinite" }} />
+              <div style={{ fontSize:14, fontWeight:500, color:"#0F0F0E" }}>{progress}</div>
+              </div>
           )}
 
           {status === "done" && resultUrl && (
@@ -609,7 +612,7 @@ export default function HomePage() {
               <div style={{ fontSize:40, marginBottom:12 }}>✅</div>
               <div style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>Extraction Complete</div>
               {stats && (
-                <div style={{ fontSize:12, opacity:0.6, marginBottom:16, lineHeight:1.8 }}>
+                <div style={{ fontSize:12, color:"#5A5850", marginBottom:16, lineHeight:1.8 }}>
                   {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
@@ -620,14 +623,14 @@ export default function HomePage() {
                 style={{ display:"none" }} aria-hidden="true" />
               {/* Visible download button as fallback */}
               <a href={resultUrl} download={`shop_order_v14936_${file?.name?.replace(".pdf","")}.xlsx`}
-                style={{ display:"inline-block", padding:"13px 28px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:20 }}>
+                style={{ display:"inline-block", padding:"13px 28px", background:"#0F0F0E", color:"#FAFAF8", borderRadius:7, fontWeight:500, fontSize:14, textDecoration:"none", marginBottom:20 }}>
                 Download Excel
               </a>
 
               {/* Feedback banner */}
               {feedbackStatus !== "sent" ? (
-                <div style={{ background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:10, padding:"18px 20px", textAlign:"left", marginBottom:16 }}>
-                  <div style={{ fontSize:13, fontWeight:600, marginBottom:12, color:"#e2e8f0" }}>
+                <div style={{ background:"#F5F3EE", border:"1px solid #E8E6E1", borderRadius:10, padding:"18px 20px", textAlign:"left", marginBottom:16 }}>
+                  <div style={{ fontSize:13, fontWeight:600, marginBottom:12, color:"#0F0F0E" }}>
                     How accurate was the extraction?
                   </div>
                   {/* Star rating */}
@@ -649,7 +652,7 @@ export default function HomePage() {
                     value={feedbackNote}
                     onChange={e => setFeedbackNote(e.target.value)}
                     placeholder="What was missing or wrong? (optional)"
-                    style={{ width:"100%", padding:"9px 12px", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#e2e8f0", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:10 }}
+                    style={{ width:"100%", padding:"9px 12px", background:"#fff", border:"1px solid #E8E6E1", borderRadius:6, color:"#0F0F0E", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:10 }}
                   />
                   <div style={{ display:"flex", gap:8 }}>
                     <input
@@ -657,37 +660,37 @@ export default function HomePage() {
                       value={feedbackEmail}
                       onChange={e => setFeedbackEmail(e.target.value)}
                       placeholder="your@email.com (to follow up)"
-                      style={{ flex:1, padding:"9px 12px", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#e2e8f0", fontSize:13, outline:"none" }}
+                      style={{ flex:1, padding:"9px 12px", background:"#fff", border:"1px solid #E8E6E1", borderRadius:6, color:"#0F0F0E", fontSize:13, outline:"none" }}
                     />
                     <button type="button" onClick={(e) => { e.stopPropagation(); submitFeedback(); }}
                       disabled={!feedbackEmail || feedbackRating === null || feedbackStatus === "sending"}
-                      style={{ padding:"9px 18px", background: (feedbackEmail && feedbackRating !== null) ? "rgba(34,211,238,0.2)" : "rgba(255,255,255,0.06)", border: (feedbackEmail && feedbackRating !== null) ? "1px solid rgba(34,211,238,0.4)" : "1px solid rgba(255,255,255,0.1)", borderRadius:6, color: (feedbackEmail && feedbackRating !== null) ? "#22d3ee" : "#666", fontSize:13, cursor: (feedbackEmail && feedbackRating !== null) ? "pointer" : "default", fontFamily:"inherit", whiteSpace:"nowrap", fontWeight: (feedbackEmail && feedbackRating !== null) ? 600 : 400 }}>
+                      style={{ padding:"9px 18px", background: (feedbackEmail && feedbackRating !== null) ? "#0F0F0E" : "#F0EEE9", border: "1px solid #E8E6E1", borderRadius:6, color: (feedbackEmail && feedbackRating !== null) ? "#FAFAF8" : "#A8A69E", fontSize:13, cursor: (feedbackEmail && feedbackRating !== null) ? "pointer" : "default", fontFamily:"inherit", whiteSpace:"nowrap", fontWeight: (feedbackEmail && feedbackRating !== null) ? 600 : 400 }}>
                       {feedbackStatus === "sending" ? "..." : "Send"}
                     </button>
                   </div>
                 </div>
               ) : (
-                <div style={{ fontSize:13, color:"#22c55e", marginBottom:16, padding:"12px 16px", background:"rgba(34,197,94,0.08)", borderRadius:8 }}>
+                <div style={{ fontSize:13, color:"#16a34a", marginBottom:16, padding:"12px 16px", background:"#ECFDF5", border:"1px solid #D1FAE5", borderRadius:8 }}>
                   Thanks for the feedback — it goes straight into training data.
                 </div>
               )}
 
-              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Extract Another</button>
+              <button onClick={reset} style={{ background:"none", border:"1px solid #D4D2CC", color:"#0F0F0E", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Extract Another</button>
             </div>
           )}
 
           {status === "error" && (
             <div style={{ padding:"24px 0" }}>
               <div style={{ fontSize:40, marginBottom:16 }}>❌</div>
-              <div style={{ fontSize:14, fontWeight:600, color:"#ef4444", marginBottom:8 }}>{error}</div>
-              <button onClick={reset} style={{ background:"none", border:"1px solid rgba(255,255,255,0.15)", color:"#e2e8f0", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Try Again</button>
+              <div style={{ fontSize:14, fontWeight:500, color:"#0F0F0E", color:"#ef4444", marginBottom:8 }}>{error}</div>
+              <button onClick={reset} style={{ background:"none", border:"1px solid #D4D2CC", color:"#0F0F0E", padding:"10px 24px", borderRadius:8, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>Try Again</button>
             </div>
           )}
         </div>
       </section>
 
-      <footer style={{ textAlign:"center", padding:"40px 20px", borderTop:"1px solid rgba(255,255,255,0.06)", fontSize:12, opacity:0.4 }}>
-        ProjMgtAI -- Construction Intelligence, not guesswork.
+      <footer style={{ textAlign:"center", padding:"28px 48px", borderTop:"1px solid #E8E6E1", fontSize:11, color:"#A8A69E", fontFamily:"'DM Mono',monospace", letterSpacing:"0.06em" }}>
+        PROJMGTAI  ·  CENTRIV AI  ·  FULLERTON CA
       </footer>
     </main>
   );
