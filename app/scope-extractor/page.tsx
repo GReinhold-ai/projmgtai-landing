@@ -22,7 +22,7 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // v14.9.36: Post-download feedback capture
+  // v14.9.36-r2: Post-download feedback capture
   const [feedbackEmail, setFeedbackEmail] = useState("");
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackNote, setFeedbackNote] = useState("");
@@ -36,13 +36,13 @@ export default function HomePage() {
     else setError("Please drop a PDF file.");
   }, []);
 
-  // v14.9.36: Auto-trigger download when resultUrl appears
-  const prevResultUrl = useRef<string | null>(null);
-  if (resultUrl && resultUrl !== prevResultUrl.current) {
-    prevResultUrl.current = resultUrl;
-    // Programmatic click fires after render via the ref
-    setTimeout(() => downloadLinkRef.current?.click(), 100);
+  // v14.9.36-r2: Auto-trigger download — flag ref fires once, never interferes with star clicks
+  const didAutoDownload = useRef(false);
+  if (resultUrl && !didAutoDownload.current) {
+    didAutoDownload.current = true;
+    setTimeout(() => downloadLinkRef.current?.click(), 300);
   }
+  if (status === 'idle') didAutoDownload.current = false;
 
   async function submitFeedback() {
     if (!feedbackEmail || feedbackRating === null) return;
