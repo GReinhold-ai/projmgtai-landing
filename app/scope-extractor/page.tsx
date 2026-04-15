@@ -22,7 +22,7 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // v14.9.35: Post-download feedback capture
+  // v14.9.36: Post-download feedback capture
   const [feedbackEmail, setFeedbackEmail] = useState("");
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackNote, setFeedbackNote] = useState("");
@@ -36,7 +36,7 @@ export default function HomePage() {
     else setError("Please drop a PDF file.");
   }, []);
 
-  // v14.9.35: Auto-trigger download when resultUrl appears
+  // v14.9.36: Auto-trigger download when resultUrl appears
   const prevResultUrl = useRef<string | null>(null);
   if (resultUrl && resultUrl !== prevResultUrl.current) {
     prevResultUrl.current = resultUrl;
@@ -616,10 +616,10 @@ export default function HomePage() {
               )}
               {/* Hidden auto-download anchor — clicked programmatically */}
               <a ref={downloadLinkRef} href={resultUrl}
-                download={`shop_order_v14935_${file?.name?.replace(".pdf","")}.xlsx`}
+                download={`shop_order_v14936_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"none" }} aria-hidden="true" />
               {/* Visible download button as fallback */}
-              <a href={resultUrl} download={`shop_order_v14935_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v14936_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"13px 28px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:20 }}>
                 Download Excel
               </a>
@@ -633,8 +633,8 @@ export default function HomePage() {
                   {/* Star rating */}
                   <div style={{ display:"flex", gap:6, marginBottom:12 }}>
                     {[1,2,3,4,5].map(n => (
-                      <button key={n} onClick={() => setFeedbackRating(n)}
-                        style={{ fontSize:22, background:"none", border:"none", cursor:"pointer", opacity: feedbackRating && feedbackRating >= n ? 1 : 0.25, transition:"opacity 0.1s" }}>
+                      <button key={n} type="button" onClick={(e) => { e.stopPropagation(); setFeedbackRating(n); }}
+                        style={{ fontSize:22, background:"none", border:"none", cursor:"pointer", opacity: feedbackRating !== null && feedbackRating >= n ? 1 : 0.3, transition:"opacity 0.1s" }}>
                         ★
                       </button>
                     ))}
@@ -659,9 +659,9 @@ export default function HomePage() {
                       placeholder="your@email.com (to follow up)"
                       style={{ flex:1, padding:"9px 12px", background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#e2e8f0", fontSize:13, outline:"none" }}
                     />
-                    <button onClick={submitFeedback}
+                    <button type="button" onClick={(e) => { e.stopPropagation(); submitFeedback(); }}
                       disabled={!feedbackEmail || feedbackRating === null || feedbackStatus === "sending"}
-                      style={{ padding:"9px 18px", background: feedbackEmail && feedbackRating ? "rgba(34,211,238,0.15)" : "rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:6, color:"#22d3ee", fontSize:13, cursor: feedbackEmail && feedbackRating ? "pointer" : "default", fontFamily:"inherit", whiteSpace:"nowrap" }}>
+                      style={{ padding:"9px 18px", background: (feedbackEmail && feedbackRating !== null) ? "rgba(34,211,238,0.2)" : "rgba(255,255,255,0.06)", border: (feedbackEmail && feedbackRating !== null) ? "1px solid rgba(34,211,238,0.4)" : "1px solid rgba(255,255,255,0.1)", borderRadius:6, color: (feedbackEmail && feedbackRating !== null) ? "#22d3ee" : "#666", fontSize:13, cursor: (feedbackEmail && feedbackRating !== null) ? "pointer" : "default", fontFamily:"inherit", whiteSpace:"nowrap", fontWeight: (feedbackEmail && feedbackRating !== null) ? 600 : 400 }}>
                       {feedbackStatus === "sending" ? "..." : "Send"}
                     </button>
                   </div>
