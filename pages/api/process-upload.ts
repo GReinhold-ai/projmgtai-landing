@@ -226,6 +226,80 @@ async function sendConfirmationEmail(
   }
 }
 
+// -- Feedback notification email -----------------------------------------
+async function sendFeedbackNotification(
+  fromEmail: string,
+  projectName: string,
+  feedback: { rating?: number; note?: string; items?: number; rooms?: number }
+) {
+  const stars = "★".repeat(feedback.rating || 0) + "☆".repeat(5 - (feedback.rating || 0));
+  const label = ["", "Poor", "Fair", "Good", "Great", "Perfect"][feedback.rating || 0] || "";
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0b0d14;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#0b0d14;padding:32px 20px;">
+    <tr><td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" border="0"
+        style="background:#0f1117;border:1px solid #1e2130;border-radius:4px;">
+        <tr><td height="3" bgcolor="#6366f1" style="font-size:0;line-height:0;">&nbsp;</td></tr>
+        <tr><td style="padding:24px 32px 8px 32px;">
+          <p style="margin:0 0 4px 0;font-family:'Courier New',monospace;font-size:10px;letter-spacing:3px;color:#6366f1;text-transform:uppercase;">
+            // ProjMgt.AI Feedback
+          </p>
+          <h2 style="margin:0;font-size:20px;font-weight:700;color:#f0ede8;">
+            ${stars} ${label}
+          </h2>
+        </td></tr>
+        <tr><td style="padding:12px 32px 20px 32px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#141720;border:1px solid #1e2130;border-radius:3px;">
+            <tr><td style="padding:14px 16px;">
+              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
+                <strong style="color:#f0ede8;">From:</strong> ${fromEmail}
+              </p>
+              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
+                <strong style="color:#f0ede8;">Project:</strong> ${projectName}
+              </p>
+              <p style="margin:0 0 8px 0;font-size:13px;color:#9098a8;">
+                <strong style="color:#f0ede8;">Extraction:</strong> ${feedback.rooms || "?"} rooms, ${feedback.items || "?"} items
+              </p>
+              ${feedback.note ? `<p style="margin:8px 0 0 0;font-size:13px;color:#f0ede8;border-top:1px solid #1e2130;padding-top:10px;">
+                "${feedback.note}"
+              </p>` : ""}
+            </td></tr>
+          </table>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.SENDGRID_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: "greinhold@rewmo.ai" }] }],
+      from: {
+        email: process.env.SENDGRID_FROM_EMAIL || "outreach@projmgt.ai",
+        name: "ProjMgt.AI Feedback",
+      },
+      reply_to: { email: fromEmail },
+      subject: `[Feedback] ${stars} ${label} - ${projectName}`,
+      content: [{ type: "text/html", value: html }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`SendGrid feedback failed: ${err}`);
+  }
+}
+
 // -- Main handler ---------------------------------------------------------
 export default async function handler(
   req: NextApiRequest,
@@ -271,9 +345,14 @@ export default async function handler(
     }
   }
 
-  // Log feedback if present
+  // Send feedback notification to Gary and log
   if (feedback) {
     console.log(`[process-upload] Feedback from ${email}:`, JSON.stringify(feedback));
+    try {
+      await sendFeedbackNotification(email, resolvedProjectName, feedback);
+    } catch (err) {
+      console.error("[process-upload] Feedback notification failed:", err);
+    }
   }
 
   // Log blob URLs

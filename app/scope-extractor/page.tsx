@@ -22,7 +22,7 @@ export default function HomePage() {
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // v14.9.34: Post-download feedback capture
+  // v14.9.35: Post-download feedback capture
   const [feedbackEmail, setFeedbackEmail] = useState("");
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackNote, setFeedbackNote] = useState("");
@@ -36,7 +36,7 @@ export default function HomePage() {
     else setError("Please drop a PDF file.");
   }, []);
 
-  // v14.9.34: Auto-trigger download when resultUrl appears
+  // v14.9.35: Auto-trigger download when resultUrl appears
   const prevResultUrl = useRef<string | null>(null);
   if (resultUrl && resultUrl !== prevResultUrl.current) {
     prevResultUrl.current = resultUrl;
@@ -616,10 +616,10 @@ export default function HomePage() {
               )}
               {/* Hidden auto-download anchor — clicked programmatically */}
               <a ref={downloadLinkRef} href={resultUrl}
-                download={`shop_order_v14934_${file?.name?.replace(".pdf","")}.xlsx`}
+                download={`shop_order_v14935_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"none" }} aria-hidden="true" />
               {/* Visible download button as fallback */}
-              <a href={resultUrl} download={`shop_order_v14934_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v14935_${file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"13px 28px", background:"linear-gradient(135deg,#22c55e,#16a34a)", color:"#fff", borderRadius:8, fontWeight:700, fontSize:14, textDecoration:"none", marginBottom:20 }}>
                 Download Excel
               </a>
