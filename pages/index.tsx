@@ -46,6 +46,9 @@ export default function HomePage() {
     if (!email) { router.push("/scope-extractor"); return; }
     setSubmitting(true);
     try {
+      // v14.9.39: Store email in sessionStorage so scope extractor can capture PDFs
+      try { sessionStorage.setItem("projmgtai_email", email); } catch (_) {}
+
       await fetch("/api/process-upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -23,6 +23,9 @@ export default function HomePage() {
   const [stats, setStats] = useState<any>(null);
   const [pdfReady, setPdfReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // v14.9.39: Lead email from homepage capture — drives PDF upload to Blob
+  const [leadEmail, setLeadEmail] = useState<string>("");
+  const pdfBuffers = useRef<{name: string; buffer: ArrayBuffer}[]>([]);
 
   // v14.9.36: Post-download feedback capture
   const [feedbackEmail, setFeedbackEmail] = useState("");
@@ -30,6 +33,17 @@ export default function HomePage() {
   const [feedbackNote, setFeedbackNote] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState<"idle" | "sending" | "sent">("idle");
   const downloadLinkRef = useRef<HTMLAnchorElement>(null);
+
+  // v14.9.39: Read lead email from sessionStorage on mount
+  const { useEffect } = require("react");
+  const didReadEmail = useRef(false);
+  if (!didReadEmail.current && typeof window !== "undefined") {
+    didReadEmail.current = true;
+    try {
+      const stored = sessionStorage.getItem("projmgtai_email");
+      if (stored) setLeadEmail(stored);
+    } catch (_) {}
+  }
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -78,6 +92,8 @@ export default function HomePage() {
 
   async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
     const buf = await pdfFile.arrayBuffer();
+    // v14.9.39: Store buffer for later Blob upload
+    pdfBuffers.current = [...(pdfBuffers.current || []), { name: pdfFile.name, buffer: buf }];
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
     const imagePages: Record<number, string> = {};
@@ -235,10 +251,94 @@ export default function HomePage() {
       const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
       setResultUrl(URL.createObjectURL(blob));
       setStatus("done"); setProgress("");
+
+      // v14.9.39: Upload PDFs to Blob + log extraction (only for lead-capture users)
+      if (leadEmail && pdfBuffers.current.length > 0) {
+        uploadAndLog(leadEmail, pdfBuffers.current, finalStats).catch(e =>
+          console.warn("[v14.9.39] upload/log failed:", e)
+        );
+      }
     } catch (err: any) {
       setStatus("error"); setError(err.message || "Something went wrong"); setProgress("");
     }
   };
+
+  // v14.9.39: Upload PDFs to Vercel Blob + log to Supabase
+  // Only called for lead-capture users (has email from sessionStorage)
+  async function uploadAndLog(
+    email: string,
+    buffers: {name: string; buffer: ArrayBuffer}[],
+    stats: any
+  ) {
+    const blobUrls: {url: string; filename: string; size_kb: number}[] = [];
+
+    for (const { name, buffer } of buffers) {
+      try {
+        // Get upload token from our API
+        const tokenRes = await fetch("/api/blob-upload-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "blob.generate-client-token",
+            payload: {
+              pathname: `extractions/${Date.now()}_${name}`,
+              callbackUrl: `${window.location.origin}/api/blob-upload-token`,
+              multipart: false,
+            },
+          }),
+        });
+
+        if (!tokenRes.ok) {
+          console.warn("[v14.9.39] token fetch failed for", name);
+          continue;
+        }
+
+        const { clientToken } = await tokenRes.json();
+        if (!clientToken) continue;
+
+        // PUT directly to Vercel Blob
+        const putRes = await fetch(
+          `https://blob.vercel-storage.com/extractions/${Date.now()}_${encodeURIComponent(name)}`,
+          {
+            method: "PUT",
+            headers: {
+              "Authorization": `Bearer ${clientToken}`,
+              "Content-Type": "application/pdf",
+              "x-content-type": "application/pdf",
+            },
+            body: buffer,
+          }
+        );
+
+        if (putRes.ok) {
+          const { url } = await putRes.json();
+          blobUrls.push({ url, filename: name, size_kb: Math.round(buffer.byteLength / 1024) });
+          console.log("[v14.9.39] uploaded:", name, "->", url);
+        }
+      } catch (e) {
+        console.warn("[v14.9.39] blob upload failed for", name, e);
+      }
+    }
+
+    // Log to Supabase regardless of whether blob upload succeeded
+    try {
+      await fetch("/api/log-extraction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_email: email,
+          project_name: stats?.roomResults?.[0]?.room || "unknown",
+          room_count: stats?.roomCount || 0,
+          item_count: stats?.totalItems || 0,
+          page_count: stats?.pageCount || 0,
+          blob_urls: blobUrls,
+        }),
+      });
+      console.log("[v14.9.39] extraction logged for", email);
+    } catch (e) {
+      console.warn("[v14.9.39] log-extraction failed:", e);
+    }
+  }
 
   async function buildExcel(
     rows: any[], roomResults: any[], warnings: string[],
