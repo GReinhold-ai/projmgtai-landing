@@ -562,6 +562,7 @@ export default function HomePage() {
           <span style={{ fontSize:12, color:"#8A8880", fontFamily:"'DM Mono',monospace", display:"flex", alignItems:"center", gap:6 }}>
             <span style={{ width:6, height:6, borderRadius:"50%", background:"#16a34a" }} />v14.9.38
           </span>
+        </div>
       </nav>
 
       <section style={{ textAlign:"center", padding:"72px 20px 56px" }}>
