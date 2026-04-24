@@ -208,47 +208,79 @@ function parseRow(row: string, sourcePage: number): FinishScheduleRoom | null {
 // ─────────────────────────────────────────────────────────────────
 
 function parseFinishSchedulePage(text: string, pageNum: number): FinishScheduleRoom[] {
-  console.log(`[FS-ROW-DIAG] parseFinishSchedulePage(${pageNum}): text length=${text.length}`);
-  console.log(`[FS-ROW-DIAG] Page ${pageNum} first 400 chars: ${text.substring(0, 400).replace(/\n/g, ' \\n ')}`);
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  console.log(`[FS-ROW-DIAG] Page ${pageNum}: ${lines.length} non-empty lines`);
+  // v14.9.40c: Room-number-based row splitter.
+  // Works on both pypdf (newline-separated) and pdf.js (space-concatenated) text.
+  //
+  // Strategy: normalize all whitespace to single spaces, then locate every
+  // room-number pattern and split the text at those anchor points. Each
+  // chunk [anchor, next-anchor) is a full row (room# + name + codes + notes).
 
-  // Merge continuation lines (non-header lines that don't start with a room number)
+  // Normalize: collapse all whitespace runs to single space
+  const normalized = text.replace(/\s+/g, " ").trim();
+
+  // Room-number anchor: digits+optional letter, preceded by space or start,
+  // followed by space + UPPERCASE word (room name starts with a capital word).
+  // Examples that match: " 101 GREAT", " 101B RECEPTION", " S1 STAIR", " VESTIBULE "
+  //
+  // Two anchor patterns combined:
+  //  (a) digit-based rooms: \b\d{2,4}[A-Z]?\s+[A-Z] ...
+  //  (b) special tokens: VESTIBULE, ELEVATORS, S\d (stair numbering)
+  const anchorRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
+
+  // Find all anchor positions
+  const anchors: { roomNum: string; startIdx: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = anchorRe.exec(normalized)) !== null) {
+    // m.index points to the leading whitespace OR start of string.
+    // The actual room-num token starts at m.index + (m[0].length - m[1].length - trailing space)
+    // Simpler: compute based on the full match.
+    const fullMatch = m[0];
+    const leading = fullMatch.length - m[1].length - 1;  // " " + roomNum + " " but last space is in lookahead
+    // Account for anchor at start of string (no leading whitespace)
+    const roomNumStart = m.index + (fullMatch.startsWith(m[1]) ? 0 : leading);
+    anchors.push({ roomNum: m[1], startIdx: roomNumStart });
+  }
+
+  // Filter out false-positive anchors.
+  // Valid row-anchor must satisfy:
+  //   (1) Within 80 chars there's a finish code like CT-1, WD-1, etc.
+  //   (2) No OTHER anchor appears before that code in the window.
+  // This rejects things like "7100 Northland Circle" (no code) and
+  // "2019 PROJECT 101 GREAT ROOM CT-1..." (101 appears before CT-1).
+  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  const anchorProbeRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
+  const validAnchors = anchors.filter(a => {
+    const window = normalized.substring(a.startIdx, a.startIdx + 80);
+    const codeMatch = codeProbeRe.exec(window);
+    if (!codeMatch) return false;
+    const preCodeText = window.substring(0, codeMatch.index);
+    const otherAnchors = Array.from(preCodeText.matchAll(anchorProbeRe));
+    return otherAnchors.length <= 1;  // only our own self-anchor is allowed
+  });
+
+  // Build rows by slicing between validated anchors
   const rows: string[] = [];
-  let current: string | null = null;
-
-  for (const line of lines) {
-    const upper = line.toUpperCase().substring(0, 30);
-    const isHeader = HEADER_KEYWORDS.some(h => upper.includes(h));
-    const startsWithRoomNum = ROOM_NUM_RE.test(line);
-
-    if (startsWithRoomNum && !isHeader) {
-      if (current) rows.push(current);
-      current = line;
-    } else if (current && !isHeader) {
-      // Only merge if line looks like a continuation (starts with code or non-upper text)
-      if (!/^[A-Z]{2,}/.test(line) || /^(?:PT|CT|WC|AF|RC|PL|LVP|CPT|QZ|SS|WD|VB|VCT)-/.test(line)) {
-        current += " " + line;
-      }
-    }
+  for (let i = 0; i < validAnchors.length; i++) {
+    const start = validAnchors[i].startIdx;
+    const end = i + 1 < validAnchors.length ? validAnchors[i + 1].startIdx : normalized.length;
+    const rowText = normalized.substring(start, end).trim();
+    if (rowText.length > 0) rows.push(rowText);
   }
-  if (current) rows.push(current);
 
-  console.log(`[FS-ROW-DIAG] Page ${pageNum}: merged into ${rows.length} candidate rows`);
+  console.log(`[v14.9.40c] Page ${pageNum}: extracted ${rows.length} rows from ${normalized.length} chars (${anchors.length} raw anchors, ${validAnchors.length} validated)`);
+
   if (rows.length > 0) {
-    console.log(`[FS-ROW-DIAG] First 3 candidate rows:`);
     for (const r of rows.slice(0, 3)) {
-      console.log(`  [FS-ROW-DIAG]  > ${r.substring(0, 150)}`);
+      console.log(`[v14.9.40c]   > ${r.substring(0, 120)}`);
     }
   }
+
   const parsed: FinishScheduleRoom[] = [];
-  let parseRowFails = 0;
   for (const row of rows) {
     const p = parseRow(row, pageNum);
     if (p) parsed.push(p);
-    else parseRowFails++;
   }
-  console.log(`[FS-ROW-DIAG] Page ${pageNum}: parseRow produced ${parsed.length} rooms (${parseRowFails} rows failed)`);
+  console.log(`[v14.9.40c] Page ${pageNum}: parseRow produced ${parsed.length} rooms`);
   return parsed;
 }
 
