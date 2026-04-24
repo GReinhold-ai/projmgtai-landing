@@ -208,7 +208,10 @@ function parseRow(row: string, sourcePage: number): FinishScheduleRoom | null {
 // ─────────────────────────────────────────────────────────────────
 
 function parseFinishSchedulePage(text: string, pageNum: number): FinishScheduleRoom[] {
+  console.log(`[FS-ROW-DIAG] parseFinishSchedulePage(${pageNum}): text length=${text.length}`);
+  console.log(`[FS-ROW-DIAG] Page ${pageNum} first 400 chars: ${text.substring(0, 400).replace(/\n/g, ' \\n ')}`);
   const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  console.log(`[FS-ROW-DIAG] Page ${pageNum}: ${lines.length} non-empty lines`);
 
   // Merge continuation lines (non-header lines that don't start with a room number)
   const rows: string[] = [];
@@ -231,11 +234,21 @@ function parseFinishSchedulePage(text: string, pageNum: number): FinishScheduleR
   }
   if (current) rows.push(current);
 
+  console.log(`[FS-ROW-DIAG] Page ${pageNum}: merged into ${rows.length} candidate rows`);
+  if (rows.length > 0) {
+    console.log(`[FS-ROW-DIAG] First 3 candidate rows:`);
+    for (const r of rows.slice(0, 3)) {
+      console.log(`  [FS-ROW-DIAG]  > ${r.substring(0, 150)}`);
+    }
+  }
   const parsed: FinishScheduleRoom[] = [];
+  let parseRowFails = 0;
   for (const row of rows) {
     const p = parseRow(row, pageNum);
     if (p) parsed.push(p);
+    else parseRowFails++;
   }
+  console.log(`[FS-ROW-DIAG] Page ${pageNum}: parseRow produced ${parsed.length} rooms (${parseRowFails} rows failed)`);
   return parsed;
 }
 
