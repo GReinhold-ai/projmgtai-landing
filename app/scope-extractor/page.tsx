@@ -9,6 +9,7 @@ import Head from "next/head";
 import Link from "next/link";
 // v14.9.31: Assembly decomposer — AWI 300 parts explosion
 import { decomposeItems, partsToAOA } from "./assembly-decomposer";
+import { parseFinishSchedule, buildFinishScheduleItems } from "./finish-schedule-parser";
 
 type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "done" | "error";
 
@@ -164,6 +165,27 @@ export default function HomePage() {
       const rooms = analysis.rooms || [];
       const projectContext = analysis.projectContext || {};
 
+      // v14.9.40: Finish-schedule parser — extract structured millwork from FS pages
+      // Non-fatal: if this throws, room-by-room extraction continues as before.
+      try {
+        const fsResult = parseFinishSchedule(pdfText);
+        if (fsResult.rooms.length > 0) {
+          const fsItems = buildFinishScheduleItems(fsResult);
+          console.log(
+            `[v14.9.40] Finish schedule: ${fsResult.rooms.length} rooms parsed, ` +
+            `${fsItems.length} items from ${fsResult.schedulePages.length} FS pages ` +
+            `+ ${fsResult.legend.length} legend entries`
+          );
+          projectContext.finishScheduleItems = fsItems;
+          projectContext.finishScheduleLegend = fsResult.legend;
+          projectContext.finishSchedulePages = fsResult.schedulePages;
+        } else {
+          console.log("[v14.9.40] Finish schedule: no FS pages detected");
+        }
+      } catch (fsErr) {
+        console.warn("[v14.9.40] Finish schedule parser failed, continuing without it:", fsErr);
+      }
+
       setStatus("extracting");
       const allRows: any[] = [];
       const allWarnings: string[] = [];
@@ -247,6 +269,23 @@ export default function HomePage() {
         roomResults,
       };
       setStats(finalStats);
+
+      // v14.9.40: Merge finish-schedule-parser items into allRows
+      // Dedupe: if an LLM-extracted item already covers (room, material_code), skip the FS item.
+      const fsItemsToMerge = projectContext.finishScheduleItems || [];
+      if (fsItemsToMerge.length > 0) {
+        let merged = 0;
+        for (const fsItem of fsItemsToMerge) {
+          const duplicate = allRows.find((r: any) =>
+            r.room === fsItem.room && r.material_code === fsItem.material_code
+          );
+          if (!duplicate) {
+            allRows.push(fsItem);
+            merged++;
+          }
+        }
+        console.log(`[v14.9.40] Merged ${merged} finish-schedule items into allRows (total: ${allRows.length})`);
+      }
 
       const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
       setResultUrl(URL.createObjectURL(blob));
