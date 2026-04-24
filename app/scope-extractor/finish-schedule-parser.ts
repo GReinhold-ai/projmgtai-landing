@@ -364,35 +364,9 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
   const schedulePages: number[] = [];
   const legendPages: number[] = [];
 
-  console.log(`[FS-DIAG] pageSplitRe matched ${pages.length} pages`);
-  if (pages.length === 0) {
-    console.log(`[FS-DIAG] No pages matched. Input length=${allPageText.length}, `
-      + `first 300 chars: ${allPageText.substring(0, 300).replace(/\n/g, '\\n')}`);
-  } else {
-    console.log(`[FS-DIAG] First page sample: page ${pages[0].pageNum}, `
-      + `text length ${pages[0].text.length}, `
-      + `first 200 chars: ${pages[0].text.substring(0, 200).replace(/\n/g, '\\n')}`);
-  }
-
   for (const { pageNum, text } of pages) {
     const fsCheck = isFinishSchedulePage(text);
     const legCheck = isFinishLegendPage(text);
-    if (!fsCheck && !legCheck) {
-      // Show why — check which keywords were present in first 500 chars
-      const first500 = text.substring(0, 500).toUpperCase();
-      const flags = {
-        FS: /FINISH\s*SCHEDULE/i.test(first500),
-        RN: /ROOM\s*NAME/i.test(first500),
-        WL: /WALLS/i.test(first500),
-        MW: /MILLWOR/i.test(first500),
-        IN: /ITEM\s*NO\.?\s*SPECIFICATION/i.test(first500),
-        AF: /ARCHITECTURAL\s*FINISH/i.test(first500),
-      };
-      const preview = first500.substring(0, 120).replace(/\s+/g, ' ');
-      console.log(`[FS-DIAG] Page ${pageNum} REJECTED: ${JSON.stringify(flags)} | ${preview}`);
-    } else {
-      console.log(`[FS-DIAG] Page ${pageNum} MATCHED: ${fsCheck ? 'schedule' : 'legend'}`);
-    }
     if (fsCheck) {
       schedulePages.push(pageNum);
       const pageRooms = parseFinishSchedulePage(text, pageNum);
