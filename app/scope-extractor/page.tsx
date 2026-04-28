@@ -260,7 +260,7 @@ export default function HomePage() {
       setStatus("building");
       setProgress("Building Excel workbook...");
 
-      const finalStats = {
+      let finalStats = {
         pageCount, roomCount: rooms.length, totalItems: allRows.length,
         withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
         withMaterials: allRows.filter((r: any) => r.material_code || r.material).length,
@@ -286,6 +286,20 @@ export default function HomePage() {
         }
         console.log(`[v14.9.40] Merged ${merged} finish-schedule items into allRows (total: ${allRows.length})`);
       }
+
+      // [v14.9.41] stats post-merge: recompute counts AFTER FS items merged into allRows
+      // so the UI badge reflects total scope (LLM + finish-schedule), not just LLM.
+      const mergedRoomCount = new Set(
+        allRows.map((r: any) => r.room).filter((r: any) => r && String(r).trim().length > 0)
+      ).size;
+      finalStats = {
+        ...finalStats,
+        roomCount: Math.max(finalStats.roomCount, mergedRoomCount),
+        totalItems: allRows.length,
+        withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
+        withMaterials: allRows.filter((r: any) => r.material_code || r.material).length,
+      };
+      setStats(finalStats);
 
       const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
       setResultUrl(URL.createObjectURL(blob));
