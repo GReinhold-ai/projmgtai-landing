@@ -119,30 +119,37 @@ export interface ParsedItem {
 // ─────────────────────────────────────────────────────────────────
 
 function isFinishSchedulePage(text: string): boolean {
-  // Case A: first page of a finish schedule — has the schedule header
   const first500 = text.substring(0, 500).toUpperCase();
-  const hasHeader =
-    /FINISH\s*SCHEDULE/i.test(first500) &&
-    /ROOM\s*NAME/i.test(first500);
-  if (hasHeader) return true;
+  // Original 3-rule detection: header keyword combinations
+  if (
+    /ITEM\s*NO\.?\s*SPECIFICATION/i.test(first500) ||
+    /ARCHITECTURAL\s*FINISH/i.test(first500) ||
+    (/FINISH\s*SCHEDULE/i.test(first500) &&
+      /ROOM\s*NAME/i.test(first500) &&
+      /WALLS/i.test(first500) &&
+      /MILLWOR/i.test(first500))
+  ) {
+    return true;
+  }
 
-  // Case B: continuation page — starts with a floor tag (e.g. "FIRST FLOOR - MC",
-  // "SECOND FLOOR - AL", "THIRD FLOOR - AL") AND has many room-schedule-style rows
-  const firstLines = text.substring(0, 200).toUpperCase();
-  const hasFloorTag = /\b(FIRST|SECOND|THIRD|FOURTH|FIFTH)\s*FLOOR\s*-/.test(firstLines);
-  if (!hasFloorTag) return false;
-
-  // Count rows matching: "<room#> <ROOM NAME><codes...>"
-  // Need at least 8 such rows to confidently call this a finish schedule page
-  const lines = text.split("\n");
-  let rowCount = 0;
-  for (const line of lines) {
-    // Room row pattern: starts with digits + optional letter, then caps, then a code
-    if (/^(\d+[A-Z]?|S\d+)\s*[A-Z][A-Z&\/\s']+(?:LVP|CPT|VCT|CT|PT|WD|WC|AF|RC|PL|QZ|SS|EPOXY|FRP|SC)/.test(line.trim())) {
-      rowCount++;
+  // [v14.9.41] continuation page detection: header doesn't repeat
+  // on pages 2/3 of multi-page schedules. Detect by content shape:
+  // 3+ room-number anchors each followed by a finish code within
+  // 80 chars.
+  const normalized = text.replace(/\s+/g, " ");
+  const roomAnchorRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
+  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  let validAnchorHits = 0;
+  let m: RegExpExecArray | null;
+  while ((m = roomAnchorRe.exec(normalized)) !== null) {
+    const window = normalized.substring(m.index, m.index + 80);
+    if (codeProbeRe.test(window)) {
+      validAnchorHits++;
+      if (validAnchorHits >= 3) return true;
     }
   }
-  return rowCount >= 8;
+
+  return false;
 }
 
 function isFinishLegendPage(text: string): boolean {
