@@ -136,6 +136,12 @@ function isFinishSchedulePage(text: string): boolean {
   // on pages 2/3 of multi-page schedules. Detect by content shape:
   // 3+ room-number anchors each followed by a finish code within
   // 80 chars.
+  // [v14.9.42] phantom-room guard: legend pages have lots of
+  // 'CODE-N MFR:' patterns that look like our anchor pattern,
+  // so they were being misclassified as continuation pages.
+  // Bail out early if this page tests positive as a legend page.
+  if (isFinishLegendPage(text)) return false;
+
   const normalized = text.replace(/\s+/g, " ");
   const roomAnchorRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
   const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
