@@ -654,6 +654,111 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(wb, ws, tabName);
     }
 
+    // v14.10.1: WBS Summary tab (Agent C — restored from v14.8.1)
+    {
+      const TRADE_MAP: Array<{ wbs: number; name: string; types: string[] }> = [
+        { wbs: 1,  name: "Cabinetry",            types: ["base_cabinet","upper_cabinet","tall_cabinet","controls_cabinet","safe_cabinet"] },
+        { wbs: 2,  name: "Countertops",          types: ["countertop","transaction_top"] },
+        { wbs: 3,  name: "Shelving",             types: ["adjustable_shelf","fixed_shelf","cpu_shelf"] },
+        { wbs: 4,  name: "Drawers",              types: ["drawer","file_drawer","trash_drawer","rollout_basket"] },
+        { wbs: 5,  name: "Panels & Substrates",  types: ["decorative_panel","substrate","end_panel","stainless_panel"] },
+        { wbs: 6,  name: "Trim & Molding",       types: ["trim","channel","rubber_base","corner_guard","corner_detail"] },
+        { wbs: 7,  name: "Hardware",             types: ["concealed_hinge","piano_hinge","grommet","hanger_support"] },
+        { wbs: 8,  name: "Cutouts & Electrical", types: ["equipment_cutout","conduit","j_box"] },
+        { wbs: 9,  name: "Specialty",            types: ["trellis","ada_fascia","wall_cap"] },
+        { wbs: 10, name: "Assemblies",           types: ["assembly"] },
+        { wbs: 11, name: "Exclusions",           types: ["scope_exclusion"] },
+      ];
+      const tradeOf = (itype: string): { wbs: number; name: string } => {
+        for (const t of TRADE_MAP) if (t.types.includes(itype)) return { wbs: t.wbs, name: t.name };
+        return { wbs: 99, name: "Unclassified" };
+      };
+
+      // Group rows by trade, then by room within trade
+      const byTrade: Record<number, { name: string; byRoom: Record<string, any[]> }> = {};
+      for (const r of rows) {
+        const t = tradeOf(r.item_type || "");
+        if (!byTrade[t.wbs]) byTrade[t.wbs] = { name: t.name, byRoom: {} };
+        const room = r.room || "Unclassified";
+        if (!byTrade[t.wbs].byRoom[room]) byTrade[t.wbs].byRoom[room] = [];
+        byTrade[t.wbs].byRoom[room].push(r);
+      }
+
+      const wbsHdrs = ["WBS #", "Level", "Trade / Component", "Room", "Qty", "Unit", "Total W (ft-in)", "Material", "Notes"];
+      const wbsData: any[][] = [wbsHdrs];
+      const sortedTradeKeys = Object.keys(byTrade).map(Number).sort((a, b) => a - b);
+      let totalQty = 0;
+      let totalMillwork = 0;
+      let totalExclusions = 0;
+
+      for (const tWbs of sortedTradeKeys) {
+        const trade = byTrade[tWbs];
+        const allRoomsInTrade = Object.keys(trade.byRoom);
+        // Trade header row: aggregate qty across all rooms in trade
+        let tradeQty = 0;
+        const tradeMaterials = new Set<string>();
+        for (const room of allRoomsInTrade) {
+          for (const item of trade.byRoom[room]) {
+            tradeQty += Number(item.qty) || 1;
+            if (item.material_code) tradeMaterials.add(String(item.material_code));
+          }
+        }
+        wbsData.push([
+          String(tWbs),
+          "Trade",
+          trade.name,
+          "",
+          tradeQty,
+          "",
+          "",
+          Array.from(tradeMaterials).slice(0, 6).join(", "),
+          `${allRoomsInTrade.length} room(s)`,
+        ]);
+        totalQty += tradeQty;
+        if (tWbs === 11) totalExclusions += tradeQty;
+        else totalMillwork += tradeQty;
+
+        // Room sub-rows under this trade
+        const sortedRooms = allRoomsInTrade.sort();
+        sortedRooms.forEach((room, idx) => {
+          const items = trade.byRoom[room];
+          let roomQty = 0;
+          let roomTotalW = 0;
+          const roomMaterials = new Set<string>();
+          const roomTypes: string[] = [];
+          for (const item of items) {
+            roomQty += Number(item.qty) || 1;
+            if (item.width_mm && Number(item.width_mm) > 0) roomTotalW += Number(item.width_mm) * (Number(item.qty) || 1);
+            if (item.material_code) roomMaterials.add(String(item.material_code));
+            roomTypes.push(item.item_type || "");
+          }
+          const wlbl = `${tWbs}.${idx + 1}`;
+          wbsData.push([
+            wlbl,
+            "Room",
+            `${items.length} ${trade.name.toLowerCase()} item(s)`,
+            room,
+            roomQty,
+            "EA",
+            mmToFtIn(roomTotalW),
+            Array.from(roomMaterials).slice(0, 6).join(", "),
+            roomTypes.slice(0, 12).join(", "),
+          ]);
+        });
+      }
+
+      // Footer total
+      wbsData.push(["", "", "", "", "", "", "", "", ""]);
+      wbsData.push(["", "", "TOTAL", "", totalQty, "", "", "", `${totalMillwork} millwork + ${totalExclusions} exclusions`]);
+
+      const wsWbs = XLSX.utils.aoa_to_sheet(wbsData);
+      wsWbs["!cols"] = [
+        { wch: 8 }, { wch: 8 }, { wch: 26 }, { wch: 24 },
+        { wch: 6 }, { wch: 6 }, { wch: 16 }, { wch: 22 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsWbs, "WBS Summary");
+    }
+
     // Warnings tab
     const wd: any[][] = [["WARNINGS"], []];
     if (!warnings.length) wd.push(["No warnings."]);
