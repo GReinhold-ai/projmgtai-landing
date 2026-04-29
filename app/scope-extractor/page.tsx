@@ -759,6 +759,114 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(wb, wsWbs, "WBS Summary");
     }
 
+    // v14.10.2: Bid Checklist tab (Agent D — restored from v14.8.1)
+    {
+      const CABINET_TYPES = new Set([
+        "base_cabinet","upper_cabinet","tall_cabinet","controls_cabinet","safe_cabinet"
+      ]);
+      const HARDWARE_TYPES = new Set([
+        "concealed_hinge","piano_hinge","grommet","hanger_support"
+      ]);
+      const ADA_ROOM_RE = /vanity|restroom|reception|toilet|ada/i;
+
+      // Group rows by room
+      const byRoom: Record<string, any[]> = {};
+      for (const r of rows) {
+        const room = r.room || "Unclassified";
+        if (!byRoom[room]) byRoom[room] = [];
+        byRoom[room].push(r);
+      }
+
+      const bcHdrs = ["#", "Room", "Category", "Check Item", "Status", "Found", "Notes"];
+      const bcData: any[][] = [bcHdrs];
+      let bcIdx = 1;
+
+      const sortedRooms = Object.keys(byRoom).sort();
+      for (const room of sortedRooms) {
+        const items = byRoom[room];
+        if (items.length === 0) continue;
+
+        const cabinets = items.filter((i: any) => CABINET_TYPES.has(i.item_type));
+        const hardware = items.filter((i: any) => HARDWARE_TYPES.has(i.item_type));
+        const substrate = items.filter((i: any) => i.item_type === "substrate");
+        const exclusions = items.filter((i: any) => i.item_type === "scope_exclusion");
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const isAdaRoom = ADA_ROOM_RE.test(room);
+
+        // ── Blocking ──
+        if (cabinets.length > 0) {
+          if (substrate.length > 0) {
+            bcData.push([bcIdx++, room, "Blocking", "Plywood substrate/blocking", "OK", "Yes", ""]);
+          } else {
+            bcData.push([bcIdx++, room, "Blocking", "Plywood substrate/blocking for cabinet mounting", "VERIFY", "Not found", "Cabinets present — confirm blocking scope"]);
+          }
+        }
+
+        // ── Hardware ──
+        if (cabinets.length > 0) {
+          const status = hardware.length === 0 ? "MISSING" : (hardware.length >= cabinets.length ? "OK" : "VERIFY");
+          const found = hardware.length === 0 ? "Not found" : `${hardware.length} item(s)`;
+          const notes = hardware.length === 0
+            ? `${cabinets.length} cabinet(s) — no hardware specified`
+            : "";
+          bcData.push([bcIdx++, room, "Hardware", "Cabinet hardware (hinges, pulls, locks)", status, found, notes]);
+        }
+
+        // ── Finish (material specs) ──
+        if (millwork.length > 0) {
+          const withMat = millwork.filter((i: any) => i.material_code || i.material).length;
+          const pct = millwork.length > 0 ? Math.round((withMat / millwork.length) * 100) : 0;
+          const status = pct === 100 ? "OK" : "VERIFY";
+          const missingTypes = millwork
+            .filter((i: any) => !i.material_code && !i.material)
+            .slice(0, 2)
+            .map((i: any) => i.item_type || "unknown");
+          if (pct < 100) {
+            bcData.push([bcIdx++, room, "Finish", `Material specs (${pct}% complete)`, status, `${withMat}/${millwork.length} items`, missingTypes.length ? `Missing: ${missingTypes.join(", ")}` : ""]);
+          }
+        }
+
+        // ── Dimensions ──
+        if (millwork.length > 0) {
+          const withDims = millwork.filter((i: any) => 
+            (i.width_mm && Number(i.width_mm) > 0) || 
+            (i.height_mm && Number(i.height_mm) > 0)
+          ).length;
+          const pct = millwork.length > 0 ? Math.round((withDims / millwork.length) * 100) : 0;
+          const status = pct >= 75 ? "OK" : "VERIFY";
+          const notes = pct < 75 ? "Field verify critical dimensions before fabrication" : "";
+          bcData.push([bcIdx++, room, "Dimensions", `Field dimensions (${pct}% complete)`, status, `${withDims}/${millwork.length} items`, notes]);
+        }
+
+        // ── ADA (only ADA rooms) ──
+        if (isAdaRoom) {
+          const adaItems = items.filter((i: any) => i.item_type === "ada_fascia" || i.item_type === "wall_cap");
+          if (adaItems.length === 0) {
+            bcData.push([bcIdx++, room, "ADA", "ADA fascia / wall cap items", "VERIFY", "Not found", "ADA-classified room — verify accessibility millwork scope"]);
+          } else {
+            bcData.push([bcIdx++, room, "ADA", "ADA fascia / wall cap items", "OK", `${adaItems.length} item(s)`, ""]);
+          }
+        }
+
+        // ── Exclusions ──
+        if (exclusions.length > 0) {
+          const exDescs = exclusions
+            .map((e: any) => String(e.description || "").substring(0, 60))
+            .filter((s: string) => s.length > 0)
+            .slice(0, 3)
+            .join("; ");
+          bcData.push([bcIdx++, room, "Exclusions", `${exclusions.length} scope exclusion(s)`, "VERIFY", "", exDescs]);
+        }
+      }
+
+      const wsBc = XLSX.utils.aoa_to_sheet(bcData);
+      wsBc["!cols"] = [
+        { wch: 5 }, { wch: 22 }, { wch: 12 }, { wch: 42 },
+        { wch: 9 }, { wch: 14 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsBc, "Bid Checklist");
+    }
+
     // Warnings tab
     const wd: any[][] = [["WARNINGS"], []];
     if (!warnings.length) wd.push(["No warnings."]);
