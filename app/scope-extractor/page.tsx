@@ -654,6 +654,381 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(wb, ws, tabName);
     }
 
+    // v14.10.1: WBS Summary tab (Agent C — restored from v14.8.1)
+    {
+      const TRADE_MAP: Array<{ wbs: number; name: string; types: string[] }> = [
+        { wbs: 1,  name: "Cabinetry",            types: ["base_cabinet","upper_cabinet","tall_cabinet","controls_cabinet","safe_cabinet"] },
+        { wbs: 2,  name: "Countertops",          types: ["countertop","transaction_top"] },
+        { wbs: 3,  name: "Shelving",             types: ["adjustable_shelf","fixed_shelf","cpu_shelf"] },
+        { wbs: 4,  name: "Drawers",              types: ["drawer","file_drawer","trash_drawer","rollout_basket"] },
+        { wbs: 5,  name: "Panels & Substrates",  types: ["decorative_panel","substrate","end_panel","stainless_panel"] },
+        { wbs: 6,  name: "Trim & Molding",       types: ["trim","channel","rubber_base","corner_guard","corner_detail"] },
+        { wbs: 7,  name: "Hardware",             types: ["concealed_hinge","piano_hinge","grommet","hanger_support"] },
+        { wbs: 8,  name: "Cutouts & Electrical", types: ["equipment_cutout","conduit","j_box"] },
+        { wbs: 9,  name: "Specialty",            types: ["trellis","ada_fascia","wall_cap"] },
+        { wbs: 10, name: "Assemblies",           types: ["assembly"] },
+        { wbs: 11, name: "Exclusions",           types: ["scope_exclusion"] },
+      ];
+      const tradeOf = (itype: string): { wbs: number; name: string } => {
+        for (const t of TRADE_MAP) if (t.types.includes(itype)) return { wbs: t.wbs, name: t.name };
+        return { wbs: 99, name: "Unclassified" };
+      };
+
+      // Group rows by trade, then by room within trade
+      const byTrade: Record<number, { name: string; byRoom: Record<string, any[]> }> = {};
+      for (const r of rows) {
+        const t = tradeOf(r.item_type || "");
+        if (!byTrade[t.wbs]) byTrade[t.wbs] = { name: t.name, byRoom: {} };
+        const room = r.room || "Unclassified";
+        if (!byTrade[t.wbs].byRoom[room]) byTrade[t.wbs].byRoom[room] = [];
+        byTrade[t.wbs].byRoom[room].push(r);
+      }
+
+      const wbsHdrs = ["WBS #", "Level", "Trade / Component", "Room", "Qty", "Unit", "Total W (ft-in)", "Material", "Notes"];
+      const wbsData: any[][] = [wbsHdrs];
+      const sortedTradeKeys = Object.keys(byTrade).map(Number).sort((a, b) => a - b);
+      let totalQty = 0;
+      let totalMillwork = 0;
+      let totalExclusions = 0;
+
+      for (const tWbs of sortedTradeKeys) {
+        const trade = byTrade[tWbs];
+        const allRoomsInTrade = Object.keys(trade.byRoom);
+        // Trade header row: aggregate qty across all rooms in trade
+        let tradeQty = 0;
+        const tradeMaterials = new Set<string>();
+        for (const room of allRoomsInTrade) {
+          for (const item of trade.byRoom[room]) {
+            tradeQty += Number(item.qty) || 1;
+            if (item.material_code) tradeMaterials.add(String(item.material_code));
+          }
+        }
+        wbsData.push([
+          String(tWbs),
+          "Trade",
+          trade.name,
+          "",
+          tradeQty,
+          "",
+          "",
+          Array.from(tradeMaterials).slice(0, 6).join(", "),
+          `${allRoomsInTrade.length} room(s)`,
+        ]);
+        totalQty += tradeQty;
+        if (tWbs === 11) totalExclusions += tradeQty;
+        else totalMillwork += tradeQty;
+
+        // Room sub-rows under this trade
+        const sortedRooms = allRoomsInTrade.sort();
+        sortedRooms.forEach((room, idx) => {
+          const items = trade.byRoom[room];
+          let roomQty = 0;
+          let roomTotalW = 0;
+          const roomMaterials = new Set<string>();
+          const roomTypes: string[] = [];
+          for (const item of items) {
+            roomQty += Number(item.qty) || 1;
+            if (item.width_mm && Number(item.width_mm) > 0) roomTotalW += Number(item.width_mm) * (Number(item.qty) || 1);
+            if (item.material_code) roomMaterials.add(String(item.material_code));
+            roomTypes.push(item.item_type || "");
+          }
+          const wlbl = `${tWbs}.${idx + 1}`;
+          wbsData.push([
+            wlbl,
+            "Room",
+            `${items.length} ${trade.name.toLowerCase()} item(s)`,
+            room,
+            roomQty,
+            "EA",
+            mmToFtIn(roomTotalW),
+            Array.from(roomMaterials).slice(0, 6).join(", "),
+            roomTypes.slice(0, 12).join(", "),
+          ]);
+        });
+      }
+
+      // Footer total
+      wbsData.push(["", "", "", "", "", "", "", "", ""]);
+      wbsData.push(["", "", "TOTAL", "", totalQty, "", "", "", `${totalMillwork} millwork + ${totalExclusions} exclusions`]);
+
+      const wsWbs = XLSX.utils.aoa_to_sheet(wbsData);
+      wsWbs["!cols"] = [
+        { wch: 8 }, { wch: 8 }, { wch: 26 }, { wch: 24 },
+        { wch: 6 }, { wch: 6 }, { wch: 16 }, { wch: 22 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsWbs, "WBS Summary");
+    }
+
+    // v14.10.2: Bid Checklist tab (Agent D — restored from v14.8.1)
+    {
+      const CABINET_TYPES = new Set([
+        "base_cabinet","upper_cabinet","tall_cabinet","controls_cabinet","safe_cabinet"
+      ]);
+      const HARDWARE_TYPES = new Set([
+        "concealed_hinge","piano_hinge","grommet","hanger_support"
+      ]);
+      const ADA_ROOM_RE = /vanity|restroom|reception|toilet|ada/i;
+
+      // Group rows by room
+      const byRoom: Record<string, any[]> = {};
+      for (const r of rows) {
+        const room = r.room || "Unclassified";
+        if (!byRoom[room]) byRoom[room] = [];
+        byRoom[room].push(r);
+      }
+
+      const bcHdrs = ["#", "Room", "Category", "Check Item", "Status", "Found", "Notes"];
+      const bcData: any[][] = [bcHdrs];
+      let bcIdx = 1;
+
+      const sortedRooms = Object.keys(byRoom).sort();
+      for (const room of sortedRooms) {
+        const items = byRoom[room];
+        if (items.length === 0) continue;
+
+        const cabinets = items.filter((i: any) => CABINET_TYPES.has(i.item_type));
+        const hardware = items.filter((i: any) => HARDWARE_TYPES.has(i.item_type));
+        const substrate = items.filter((i: any) => i.item_type === "substrate");
+        const exclusions = items.filter((i: any) => i.item_type === "scope_exclusion");
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const isAdaRoom = ADA_ROOM_RE.test(room);
+
+        // ── Blocking ──
+        if (cabinets.length > 0) {
+          if (substrate.length > 0) {
+            bcData.push([bcIdx++, room, "Blocking", "Plywood substrate/blocking", "OK", "Yes", ""]);
+          } else {
+            bcData.push([bcIdx++, room, "Blocking", "Plywood substrate/blocking for cabinet mounting", "VERIFY", "Not found", "Cabinets present — confirm blocking scope"]);
+          }
+        }
+
+        // ── Hardware ──
+        if (cabinets.length > 0) {
+          const status = hardware.length === 0 ? "MISSING" : (hardware.length >= cabinets.length ? "OK" : "VERIFY");
+          const found = hardware.length === 0 ? "Not found" : `${hardware.length} item(s)`;
+          const notes = hardware.length === 0
+            ? `${cabinets.length} cabinet(s) — no hardware specified`
+            : "";
+          bcData.push([bcIdx++, room, "Hardware", "Cabinet hardware (hinges, pulls, locks)", status, found, notes]);
+        }
+
+        // ── Finish (material specs) ──
+        if (millwork.length > 0) {
+          const withMat = millwork.filter((i: any) => i.material_code || i.material).length;
+          const pct = millwork.length > 0 ? Math.round((withMat / millwork.length) * 100) : 0;
+          const status = pct === 100 ? "OK" : "VERIFY";
+          const missingTypes = millwork
+            .filter((i: any) => !i.material_code && !i.material)
+            .slice(0, 2)
+            .map((i: any) => i.item_type || "unknown");
+          if (pct < 100) {
+            bcData.push([bcIdx++, room, "Finish", `Material specs (${pct}% complete)`, status, `${withMat}/${millwork.length} items`, missingTypes.length ? `Missing: ${missingTypes.join(", ")}` : ""]);
+          }
+        }
+
+        // ── Dimensions ──
+        if (millwork.length > 0) {
+          const withDims = millwork.filter((i: any) => 
+            (i.width_mm && Number(i.width_mm) > 0) || 
+            (i.height_mm && Number(i.height_mm) > 0)
+          ).length;
+          const pct = millwork.length > 0 ? Math.round((withDims / millwork.length) * 100) : 0;
+          const status = pct >= 75 ? "OK" : "VERIFY";
+          const notes = pct < 75 ? "Field verify critical dimensions before fabrication" : "";
+          bcData.push([bcIdx++, room, "Dimensions", `Field dimensions (${pct}% complete)`, status, `${withDims}/${millwork.length} items`, notes]);
+        }
+
+        // ── ADA (only ADA rooms) ──
+        if (isAdaRoom) {
+          const adaItems = items.filter((i: any) => i.item_type === "ada_fascia" || i.item_type === "wall_cap");
+          if (adaItems.length === 0) {
+            bcData.push([bcIdx++, room, "ADA", "ADA fascia / wall cap items", "VERIFY", "Not found", "ADA-classified room — verify accessibility millwork scope"]);
+          } else {
+            bcData.push([bcIdx++, room, "ADA", "ADA fascia / wall cap items", "OK", `${adaItems.length} item(s)`, ""]);
+          }
+        }
+
+        // ── Exclusions ──
+        if (exclusions.length > 0) {
+          const exDescs = exclusions
+            .map((e: any) => String(e.description || "").substring(0, 60))
+            .filter((s: string) => s.length > 0)
+            .slice(0, 3)
+            .join("; ");
+          bcData.push([bcIdx++, room, "Exclusions", `${exclusions.length} scope exclusion(s)`, "VERIFY", "", exDescs]);
+        }
+      }
+
+      const wsBc = XLSX.utils.aoa_to_sheet(bcData);
+      wsBc["!cols"] = [
+        { wch: 5 }, { wch: 22 }, { wch: 12 }, { wch: 42 },
+        { wch: 9 }, { wch: 14 }, { wch: 50 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsBc, "Bid Checklist");
+    }
+
+    // v14.10.3: RFIs tab (Agent E — Risk & RFI restored from v14.8.1)
+    {
+      type Rfi = {
+        priority: "High" | "Medium" | "Low" | "Info";
+        category: string;
+        room: string;
+        description: string;
+        reference: string;
+      };
+      const rfis: Rfi[] = [];
+
+      // Group rows by room for per-room aggregations
+      const byRoom: Record<string, any[]> = {};
+      for (const r of rows) {
+        const room = r.room || "Unclassified";
+        if (!byRoom[room]) byRoom[room] = [];
+        byRoom[room].push(r);
+      }
+
+      // ── Type 1: Missing Scope (High) — rooms with zero items ──
+      for (const rr of (roomResults || [])) {
+        const itemCount = (byRoom[rr.room] || []).length;
+        if (itemCount === 0 && rr.room && rr.room !== "Unclassified") {
+          rfis.push({
+            priority: "High",
+            category: "Missing Scope",
+            room: rr.room,
+            description: `Room detected but 0 millwork items extracted. Verify casework scope exists for ${rr.room}. Check interior elevation sheets for this room.`,
+            reference: rr.sheet || "No sheet ref",
+          });
+        }
+      }
+
+      // ── Type 2: Scope Exclusion (Medium) — one RFI per exclusion ──
+      for (const r of rows) {
+        if (r.item_type !== "scope_exclusion") continue;
+        const desc = String(r.description || "").trim();
+        if (!desc) continue;
+        rfis.push({
+          priority: "Medium",
+          category: "Scope Exclusion",
+          room: r.room || "Unclassified",
+          description: `"${desc}" — Confirm this item is by others / NIC. Verify responsible party.`,
+          reference: r.sheet_ref || "",
+        });
+      }
+
+      // ── Type 3: Missing Dimensions (Medium) — per room, items with no W or H ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const noDims = millwork.filter((i: any) =>
+          !(i.width_mm && Number(i.width_mm) > 0) &&
+          !(i.height_mm && Number(i.height_mm) > 0)
+        );
+        if (noDims.length === 0) continue;
+        const named = noDims.slice(0, 3).map((i: any) => 
+          String(i.description || i.item_type || "unnamed").substring(0, 40)
+        );
+        const more = noDims.length > 3 ? ` (+${noDims.length - 3} more)` : "";
+        rfis.push({
+          priority: "Medium",
+          category: "Missing Dimensions",
+          room,
+          description: `${noDims.length} item(s) missing dimensions: ${named.join("; ")}${more}. Field verify or obtain from detail sheets.`,
+          reference: "",
+        });
+      }
+
+      // ── Type 4: Missing Material (Low) — per room ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const noMat = millwork.filter((i: any) => !i.material_code && !i.material);
+        if (noMat.length === 0) continue;
+        const named = noMat.slice(0, 3).map((i: any) =>
+          String(i.description || i.item_type || "unnamed").substring(0, 40)
+        );
+        const more = noMat.length > 3 ? ` (+${noMat.length - 3} more)` : "";
+        rfis.push({
+          priority: "Low",
+          category: "Missing Material",
+          room,
+          description: `${noMat.length} item(s) missing material specification: ${named.join("; ")}${more}. Confirm finish and material per spec.`,
+          reference: "",
+        });
+      }
+
+      // ── Type 5: Sheet Reference (Low) — room has no sheet on any item ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        if (items.length === 0) continue;
+        const anySheet = items.some((i: any) => {
+          const s = String(i.sheet_ref || "").trim();
+          return s.length > 0 && !/^(high|medium|low)$/i.test(s);
+        });
+        if (!anySheet) {
+          rfis.push({
+            priority: "Low",
+            category: "Sheet Reference",
+            room,
+            description: `No sheet number identified for ${room}. Provide detail/elevation sheet reference for cross-check.`,
+            reference: "",
+          });
+        }
+      }
+
+      // ── Type 6: Extraction Note (Info) — pull merge warnings ──
+      const MERGE_RE = /identical rows merged|qty=\d+/i;
+      for (const w of (warnings || [])) {
+        if (!MERGE_RE.test(w)) continue;
+        // Warnings are formatted as "[RoomName] body". Extract room.
+        const m = String(w).match(/^\[([^\]]+)\]\s*(.+)$/);
+        const room = m ? m[1] : "Unclassified";
+        const body = m ? m[2] : String(w);
+        rfis.push({
+          priority: "Info",
+          category: "Extraction Note",
+          room,
+          description: body,
+          reference: "",
+        });
+      }
+
+      // Sort: priority order (High, Medium, Low, Info), then by category, then room
+      const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2, Info: 3 };
+      const CATEGORY_ORDER: Record<string, number> = {
+        "Missing Scope": 0,
+        "Scope Exclusion": 1,
+        "Missing Dimensions": 2,
+        "Missing Material": 3,
+        "Sheet Reference": 4,
+        "Extraction Note": 5,
+      };
+      rfis.sort((a, b) => {
+        const pa = PRIORITY_ORDER[a.priority] ?? 99;
+        const pb = PRIORITY_ORDER[b.priority] ?? 99;
+        if (pa !== pb) return pa - pb;
+        const ca = CATEGORY_ORDER[a.category] ?? 99;
+        const cb = CATEGORY_ORDER[b.category] ?? 99;
+        if (ca !== cb) return ca - cb;
+        return a.room.localeCompare(b.room);
+      });
+
+      const rfiHdrs = ["RFI #", "Priority", "Category", "Room", "Description", "Reference", "Status"];
+      const rfiData: any[][] = [rfiHdrs];
+      rfis.forEach((r, i) => {
+        const id = `RFI-${String(i + 1).padStart(3, "0")}`;
+        rfiData.push([id, r.priority, r.category, r.room, r.description, r.reference, "Open"]);
+      });
+      if (rfis.length === 0) {
+        rfiData.push(["", "", "", "", "No RFIs generated — extraction complete with no flagged gaps.", "", ""]);
+      }
+
+      const wsRfi = XLSX.utils.aoa_to_sheet(rfiData);
+      wsRfi["!cols"] = [
+        { wch: 9 }, { wch: 9 }, { wch: 18 }, { wch: 22 },
+        { wch: 80 }, { wch: 14 }, { wch: 8 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsRfi, "RFIs");
+    }
+
     // Warnings tab
     const wd: any[][] = [["WARNINGS"], []];
     if (!warnings.length) wd.push(["No warnings."]);
