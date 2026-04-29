@@ -867,6 +867,168 @@ export default function HomePage() {
       XLSX.utils.book_append_sheet(wb, wsBc, "Bid Checklist");
     }
 
+    // v14.10.3: RFIs tab (Agent E — Risk & RFI restored from v14.8.1)
+    {
+      type Rfi = {
+        priority: "High" | "Medium" | "Low" | "Info";
+        category: string;
+        room: string;
+        description: string;
+        reference: string;
+      };
+      const rfis: Rfi[] = [];
+
+      // Group rows by room for per-room aggregations
+      const byRoom: Record<string, any[]> = {};
+      for (const r of rows) {
+        const room = r.room || "Unclassified";
+        if (!byRoom[room]) byRoom[room] = [];
+        byRoom[room].push(r);
+      }
+
+      // ── Type 1: Missing Scope (High) — rooms with zero items ──
+      for (const rr of (roomResults || [])) {
+        const itemCount = (byRoom[rr.room] || []).length;
+        if (itemCount === 0 && rr.room && rr.room !== "Unclassified") {
+          rfis.push({
+            priority: "High",
+            category: "Missing Scope",
+            room: rr.room,
+            description: `Room detected but 0 millwork items extracted. Verify casework scope exists for ${rr.room}. Check interior elevation sheets for this room.`,
+            reference: rr.sheet || "No sheet ref",
+          });
+        }
+      }
+
+      // ── Type 2: Scope Exclusion (Medium) — one RFI per exclusion ──
+      for (const r of rows) {
+        if (r.item_type !== "scope_exclusion") continue;
+        const desc = String(r.description || "").trim();
+        if (!desc) continue;
+        rfis.push({
+          priority: "Medium",
+          category: "Scope Exclusion",
+          room: r.room || "Unclassified",
+          description: `"${desc}" — Confirm this item is by others / NIC. Verify responsible party.`,
+          reference: r.sheet_ref || "",
+        });
+      }
+
+      // ── Type 3: Missing Dimensions (Medium) — per room, items with no W or H ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const noDims = millwork.filter((i: any) =>
+          !(i.width_mm && Number(i.width_mm) > 0) &&
+          !(i.height_mm && Number(i.height_mm) > 0)
+        );
+        if (noDims.length === 0) continue;
+        const named = noDims.slice(0, 3).map((i: any) => 
+          String(i.description || i.item_type || "unnamed").substring(0, 40)
+        );
+        const more = noDims.length > 3 ? ` (+${noDims.length - 3} more)` : "";
+        rfis.push({
+          priority: "Medium",
+          category: "Missing Dimensions",
+          room,
+          description: `${noDims.length} item(s) missing dimensions: ${named.join("; ")}${more}. Field verify or obtain from detail sheets.`,
+          reference: "",
+        });
+      }
+
+      // ── Type 4: Missing Material (Low) — per room ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        const millwork = items.filter((i: any) => i.item_type !== "scope_exclusion");
+        const noMat = millwork.filter((i: any) => !i.material_code && !i.material);
+        if (noMat.length === 0) continue;
+        const named = noMat.slice(0, 3).map((i: any) =>
+          String(i.description || i.item_type || "unnamed").substring(0, 40)
+        );
+        const more = noMat.length > 3 ? ` (+${noMat.length - 3} more)` : "";
+        rfis.push({
+          priority: "Low",
+          category: "Missing Material",
+          room,
+          description: `${noMat.length} item(s) missing material specification: ${named.join("; ")}${more}. Confirm finish and material per spec.`,
+          reference: "",
+        });
+      }
+
+      // ── Type 5: Sheet Reference (Low) — room has no sheet on any item ──
+      for (const room of Object.keys(byRoom).sort()) {
+        const items = byRoom[room];
+        if (items.length === 0) continue;
+        const anySheet = items.some((i: any) => {
+          const s = String(i.sheet_ref || "").trim();
+          return s.length > 0 && !/^(high|medium|low)$/i.test(s);
+        });
+        if (!anySheet) {
+          rfis.push({
+            priority: "Low",
+            category: "Sheet Reference",
+            room,
+            description: `No sheet number identified for ${room}. Provide detail/elevation sheet reference for cross-check.`,
+            reference: "",
+          });
+        }
+      }
+
+      // ── Type 6: Extraction Note (Info) — pull merge warnings ──
+      const MERGE_RE = /identical rows merged|qty=\d+/i;
+      for (const w of (warnings || [])) {
+        if (!MERGE_RE.test(w)) continue;
+        // Warnings are formatted as "[RoomName] body". Extract room.
+        const m = String(w).match(/^\[([^\]]+)\]\s*(.+)$/);
+        const room = m ? m[1] : "Unclassified";
+        const body = m ? m[2] : String(w);
+        rfis.push({
+          priority: "Info",
+          category: "Extraction Note",
+          room,
+          description: body,
+          reference: "",
+        });
+      }
+
+      // Sort: priority order (High, Medium, Low, Info), then by category, then room
+      const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2, Info: 3 };
+      const CATEGORY_ORDER: Record<string, number> = {
+        "Missing Scope": 0,
+        "Scope Exclusion": 1,
+        "Missing Dimensions": 2,
+        "Missing Material": 3,
+        "Sheet Reference": 4,
+        "Extraction Note": 5,
+      };
+      rfis.sort((a, b) => {
+        const pa = PRIORITY_ORDER[a.priority] ?? 99;
+        const pb = PRIORITY_ORDER[b.priority] ?? 99;
+        if (pa !== pb) return pa - pb;
+        const ca = CATEGORY_ORDER[a.category] ?? 99;
+        const cb = CATEGORY_ORDER[b.category] ?? 99;
+        if (ca !== cb) return ca - cb;
+        return a.room.localeCompare(b.room);
+      });
+
+      const rfiHdrs = ["RFI #", "Priority", "Category", "Room", "Description", "Reference", "Status"];
+      const rfiData: any[][] = [rfiHdrs];
+      rfis.forEach((r, i) => {
+        const id = `RFI-${String(i + 1).padStart(3, "0")}`;
+        rfiData.push([id, r.priority, r.category, r.room, r.description, r.reference, "Open"]);
+      });
+      if (rfis.length === 0) {
+        rfiData.push(["", "", "", "", "No RFIs generated — extraction complete with no flagged gaps.", "", ""]);
+      }
+
+      const wsRfi = XLSX.utils.aoa_to_sheet(rfiData);
+      wsRfi["!cols"] = [
+        { wch: 9 }, { wch: 9 }, { wch: 18 }, { wch: 22 },
+        { wch: 80 }, { wch: 14 }, { wch: 8 },
+      ];
+      XLSX.utils.book_append_sheet(wb, wsRfi, "RFIs");
+    }
+
     // Warnings tab
     const wd: any[][] = [["WARNINGS"], []];
     if (!warnings.length) wd.push(["No warnings."]);
