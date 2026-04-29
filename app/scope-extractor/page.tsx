@@ -16,7 +16,37 @@ type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "do
 declare global { interface Window { pdfjsLib: any; XLSX: any; } }
 
 export default function HomePage() {
-  const [file, setFile] = useState<File | null>(null);
+  // v14.10.4: Multi-PDF state — array of files with auto-detected type tags
+  type FileTag = "Plans" | "Specs" | "Addenda" | "Shop Drawings";
+  type TaggedFile = { file: File; tag: FileTag };
+  const [files, setFiles] = useState<TaggedFile[]>([]);
+  const [editingTags, setEditingTags] = useState(false);
+
+  // Auto-detect file type from filename
+  const detectTag = (name: string): FileTag => {
+    const n = name.toLowerCase();
+    if (/\bspec(s|ification)?\b|\bdivision\b|\bdiv[\s_-]?\d/.test(n)) return "Specs";
+    if (/\baddend|\bdelta|\basi[\s_-]?\d/.test(n)) return "Addenda";
+    if (/\bshop[\s_-]?dwg|\bshop[\s_-]?drawing/.test(n)) return "Shop Drawings";
+    return "Plans";
+  };
+
+  const addFiles = (incoming: File[]) => {
+    const pdfs = incoming.filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+    if (pdfs.length === 0) { setError("Please drop PDF files only."); return; }
+    const tagged: TaggedFile[] = pdfs.map(f => ({ file: f, tag: detectTag(f.name) }));
+    const combined = [...files, ...tagged];
+    const totalMB = combined.reduce((s, t) => s + t.file.size, 0) / (1024 * 1024);
+    if (totalMB > 150) {
+      setError(`Combined file size ${totalMB.toFixed(0)}MB exceeds 150MB limit. Remove files or upload in batches.`);
+      return;
+    }
+    setFiles(combined);
+    setError("");
+  };
+  const removeFile = (idx: number) => setFiles(files.filter((_, i) => i !== idx));
+  const updateTag = (idx: number, tag: FileTag) =>
+    setFiles(files.map((tf, i) => i === idx ? { ...tf, tag } : tf));
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -48,10 +78,8 @@ export default function HomePage() {
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const d = e.dataTransfer.files[0];
-    if (d?.type === "application/pdf") { setFile(d); setError(""); }
-    else setError("Please drop a PDF file.");
-  }, []);
+    addFiles(Array.from(e.dataTransfer.files || []));
+  }, [files]);
 
   // v14.9.36: Auto-trigger download — flag ref fires once, never interferes with star clicks
   const didAutoDownload = useRef(false);
@@ -71,7 +99,7 @@ export default function HomePage() {
         body: JSON.stringify({
           email: feedbackEmail,
           company: "scope-extractor",
-          project_name: file?.name?.replace(".pdf", "") || "unknown",
+          project_name: files[0]?.file?.name?.replace(".pdf", "") || "unknown",
           project_type: "feedback",
           blob_urls: [],
           feedback: {
@@ -87,28 +115,31 @@ export default function HomePage() {
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) { setFile(f); setError(""); }
+    addFiles(Array.from(e.target.files || []));
   };
 
-  async function extractTextFromPdf(pdfFile: File): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
+  async function extractTextFromPdf(pdfFile: File, tag: string = "Plans", globalOffset: number = 0): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
     const buf = await pdfFile.arrayBuffer();
     // v14.9.39: Store buffer for later Blob upload
     pdfBuffers.current = [...(pdfBuffers.current || []), { name: pdfFile.name, buffer: buf }];
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
     const imagePages: Record<number, string> = {};
+    // v14.10.4: tag uppercase + underscore form for the [TAG] marker
+    const tagToken = tag.toUpperCase().replace(/\s+/g, "_");
     
     for (let i = 1; i <= pdf.numPages; i++) {
-      setProgress(`Reading page ${i} of ${pdf.numPages}...`);
+      const globalPage = globalOffset + i;
+      setProgress(`Reading ${pdfFile.name} — page ${i} of ${pdf.numPages}...`);
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text = content.items.map((it: any) => it.str).join(" ").trim();
-      pages.push(`--- PAGE ${i} ---\n${text}`);
+      // v14.10.4: include [TAG] in page marker so server can stratify if needed
+      pages.push(`--- PAGE ${globalPage} [${tagToken}] ---\n${text}`);
       
       if (text.length < 50) {
         try {
-          setProgress(`Page ${i}: image-only — rendering for vision...`);
+          setProgress(`${pdfFile.name} page ${i}: image-only — rendering for vision...`);
           const scale = 2.5;
           const viewport = page.getViewport({ scale });
           const maxDim = Math.max(viewport.width, viewport.height);
@@ -122,7 +153,7 @@ export default function HomePage() {
           await page.render({ canvasContext: ctx2d, viewport: finalViewport }).promise;
           const dataUrl = canvas.toDataURL("image/jpeg", 0.90);
           const base64 = dataUrl.split(",")[1];
-          imagePages[i] = base64;
+          imagePages[globalOffset + i] = base64;  // v14.10.4: global page numbering
           canvas.remove();
         } catch (renderErr) {
           console.warn(`Failed to render page ${i}:`, renderErr);
@@ -133,27 +164,44 @@ export default function HomePage() {
   }
 
   const handleExtract = async () => {
-    if (!file || !pdfReady) return;
-    setStatus("reading"); setProgress("Extracting text from PDF..."); setError("");
+    if (files.length === 0 || !pdfReady) return;
+    setStatus("reading"); setProgress("Extracting text from PDFs..."); setError("");
     setResultUrl(null); setStats(null);
 
     try {
-      const { text: pdfText, pageCount, imagePages } = await extractTextFromPdf(file);
-      const imagePageNums = Object.keys(imagePages).map(Number);
+      // v14.10.4: Read every file, accumulate text with [TAG] page markers and global page numbering
+      const perFile: { name: string; tag: FileTag; text: string; pageCount: number; imagePages: Record<number, string> }[] = [];
+      let globalOffset = 0;
+      const combinedImagePages: Record<number, string> = {};
+
+      for (let fi = 0; fi < files.length; fi++) {
+        const tf = files[fi];
+        setProgress(`Reading file ${fi + 1} of ${files.length}: ${tf.file.name}...`);
+        const r = await extractTextFromPdf(tf.file, tf.tag, globalOffset);
+        perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages });
+        // Re-key image pages into the global namespace
+        for (const [k, v] of Object.entries(r.imagePages)) combinedImagePages[Number(k)] = v as string;
+        globalOffset += r.pageCount;
+      }
+
+      const pdfText = perFile.map(p => p.text).join("\n\n");
+      const pageCount = globalOffset;
+      const imagePageNums = Object.keys(combinedImagePages).map(Number);
       if (imagePageNums.length > 0) {
-        setProgress(`Found ${imagePageNums.length} image-only page(s): ${imagePageNums.join(", ")} — will use vision`);
-        await new Promise(r => setTimeout(r, 1000));
+        setProgress(`Found ${imagePageNums.length} image-only page(s) across ${files.length} file(s) — will use vision`);
+        await new Promise(r => setTimeout(r, 800));
       }
       if (!pdfText || pdfText.trim().length < 10)
-        throw new Error("Could not extract text. This may be a scanned PDF.");
+        throw new Error("Could not extract text from any uploaded PDF. They may be scanned without OCR.");
 
       setStatus("analyzing");
-      setProgress(`Analyzing ${pageCount} pages — detecting rooms & material legend...`);
+      setProgress(`Analyzing ${pageCount} pages across ${files.length} file(s) — detecting rooms & material legend...`);
 
+      const projectId = files[0].file.name.replace(/\.pdf$/i, "");
       const analyzeRes = await fetch("/api/scope-extractor-v14", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: pdfText, projectId: file.name.replace(".pdf", ""), mode: "analyze" }),
+        body: JSON.stringify({ text: pdfText, projectId, mode: "analyze" }),
       });
       if (!analyzeRes.ok) {
         const e = await analyzeRes.json().catch(() => ({}));
@@ -203,7 +251,7 @@ export default function HomePage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text: pdfText,
-              projectId: file.name.replace(".pdf", ""),
+              projectId,  // v14.10.4: cached from first file
               mode: "extract",
               roomName: room.roomName,
               roomPages: room.pageNums,
@@ -301,7 +349,8 @@ export default function HomePage() {
       };
       setStats(finalStats);
 
-      const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, file.name);
+      // v14.10.4: pass first file name for downloaded Excel filename
+      const blob = await buildExcel(allRows, roomResults, allWarnings, projectContext, finalStats, files[0].file.name);
       setResultUrl(URL.createObjectURL(blob));
       setStatus("done"); setProgress("");
 
@@ -1069,7 +1118,7 @@ export default function HomePage() {
   }
 
   const reset = () => {
-    setFile(null); setStatus("idle"); setProgress(""); setError("");
+    setFiles([]); setEditingTags(false); setStatus("idle"); setProgress(""); setError("");
     if (resultUrl) URL.revokeObjectURL(resultUrl);
     setResultUrl(null); setStats(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1111,20 +1160,48 @@ export default function HomePage() {
         <div style={{ maxWidth:560, margin:"0 auto", background:"#fff", border:"1px solid #E8E6E1", borderRadius:12, padding:32, boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
           {status === "idle" && (<>
             <div onDrop={handleDrop} onDragOver={e => e.preventDefault()} onClick={() => fileInputRef.current?.click()}
-              style={{ border:"2px dashed #D4D2CC", borderRadius:10, padding:"48px 24px", cursor:"pointer", marginBottom: file ? 16 : 0 }}>
+              style={{ border:"2px dashed #D4D2CC", borderRadius:10, padding:"48px 24px", cursor:"pointer", marginBottom: files.length ? 16 : 0 }}>
               <div style={{ fontSize:32, marginBottom:12 }}>📎</div>
-              <div style={{ fontSize:14, color:"#B8860B", fontWeight:500 }}>Drop a PDF here <span style={{ color:"#8A8880", fontWeight:400 }}>or click to browse</span></div>
-              <div style={{ fontSize:12, color:"#A8A69E", marginTop:8 }}>Multi-page plan sets supported</div>
+              <div style={{ fontSize:14, color:"#B8860B", fontWeight:500 }}>Drop PDFs here <span style={{ color:"#8A8880", fontWeight:400 }}>or click to browse</span></div>
+              <div style={{ fontSize:12, color:"#A8A69E", marginTop:8 }}>Plans + specs + addenda · up to 150MB total</div>
             </div>
-            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleFileSelect} style={{ display:"none" }} />
-            {file && (<div style={{ marginTop:16 }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 16px", background:"#F5F3EE", borderRadius:8, border:"1px solid #E8E6E1", marginBottom:16 }}>
-                <span style={{ fontSize:13 }}>📄 {file.name} <span style={{ opacity:0.5 }}>({(file.size/1024).toFixed(0)} KB)</span></span>
-                <button onClick={e => { e.stopPropagation(); reset(); }} style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13 }}>✕</button>
+            <input ref={fileInputRef} type="file" accept=".pdf" multiple onChange={handleFileSelect} style={{ display:"none" }} />
+            {files.length > 0 && (<div style={{ marginTop:16 }}>
+              {files.map((tf, idx) => (
+                <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", background:"#F5F3EE", borderRadius:8, border:"1px solid #E8E6E1", marginBottom:8 }}>
+                  <span style={{ fontSize:13, flex:1, textAlign:"left", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    📄 {tf.file.name} <span style={{ opacity:0.5 }}>({(tf.file.size/1024).toFixed(0)} KB)</span>
+                  </span>
+                  {editingTags ? (
+                    <select value={tf.tag} onChange={e => { e.stopPropagation(); updateTag(idx, e.target.value as FileTag); }}
+                      onClick={e => e.stopPropagation()}
+                      style={{ marginLeft:8, padding:"4px 8px", fontSize:12, border:"1px solid #D4D2CC", borderRadius:4, background:"#fff", fontFamily:"inherit", cursor:"pointer" }}>
+                      <option value="Plans">Plans</option>
+                      <option value="Specs">Specs</option>
+                      <option value="Addenda">Addenda</option>
+                      <option value="Shop Drawings">Shop Drawings</option>
+                    </select>
+                  ) : (
+                    <span style={{ marginLeft:8, padding:"3px 8px", fontSize:11, background:"#fff", border:"1px solid #E8E6E1", borderRadius:4, color:"#6B6860", fontFamily:"'DM Mono',monospace" }}>
+                      {tf.tag}
+                    </span>
+                  )}
+                  <button onClick={e => { e.stopPropagation(); removeFile(idx); }}
+                    style={{ marginLeft:8, background:"none", border:"none", color:"#ef4444", cursor:"pointer", fontSize:13 }}>✕</button>
+                </div>
+              ))}
+              <div style={{ marginBottom:14, textAlign:"left" }}>
+                <button onClick={e => { e.stopPropagation(); setEditingTags(!editingTags); }}
+                  style={{ background:"none", border:"none", color:"#8A8880", cursor:"pointer", fontSize:11, padding:0, textDecoration:"underline" }}>
+                  {editingTags ? "Done editing tags" : "Edit tags ›"}
+                </button>
+                <span style={{ fontSize:11, color:"#A8A69E", marginLeft:10 }}>
+                  Auto-detected from filenames
+                </span>
               </div>
               <button onClick={handleExtract} disabled={!pdfReady}
                 style={{ width:"100%", padding:"14px", background: pdfReady ? "#0F0F0E" : "#E8E6E1", color: pdfReady ? "#FAFAF8" : "#8A8880", border:"none", borderRadius:8, fontWeight:700, fontSize:15, cursor: pdfReady?"pointer":"wait", fontFamily:"inherit" }}>
-                {pdfReady ? "Extract All Rooms -->" : "Loading PDF engine..."}
+                {pdfReady ? `Extract All Rooms -->` : "Loading PDF engine..."}
               </button>
             </div>)}
           </>)}
@@ -1148,10 +1225,10 @@ export default function HomePage() {
               )}
               {/* Hidden auto-download anchor — clicked programmatically */}
               <a ref={downloadLinkRef} href={resultUrl}
-                download={`shop_order_v14936_${file?.name?.replace(".pdf","")}.xlsx`}
+                download={`shop_order_v14936_${files[0]?.file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"none" }} aria-hidden="true" />
               {/* Visible download button as fallback */}
-              <a href={resultUrl} download={`shop_order_v14936_${file?.name?.replace(".pdf","")}.xlsx`}
+              <a href={resultUrl} download={`shop_order_v14936_${files[0]?.file?.name?.replace(".pdf","")}.xlsx`}
                 style={{ display:"inline-block", padding:"13px 28px", background:"#0F0F0E", color:"#FAFAF8", borderRadius:7, fontWeight:500, fontSize:14, textDecoration:"none", marginBottom:20 }}>
                 Download Excel
               </a>
