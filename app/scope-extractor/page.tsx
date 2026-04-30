@@ -1088,7 +1088,7 @@ export default function HomePage() {
         <div style={{ display:"flex", alignItems:"center", gap:24 }}>
           <a href="/pricing" style={{ fontSize:14, color:"#6B6860", textDecoration:"none" }}>Pricing</a>
           <span style={{ fontSize:12, color:"#8A8880", fontFamily:"'DM Mono',monospace", display:"flex", alignItems:"center", gap:6 }}>
-            <span style={{ width:6, height:6, borderRadius:"50%", background:"#16a34a" }} />v14.9.38
+            <span style={{ width:6, height:6, borderRadius:"50%", background:"#16a34a" }} />v14.10
           </span>
         </div>
       </nav>
