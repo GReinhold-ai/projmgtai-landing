@@ -144,7 +144,7 @@ function isFinishSchedulePage(text: string): boolean {
 
   const normalized = text.replace(/\s+/g, " ");
   const roomAnchorRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
-  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  const codeProbeRe = /\b(?:AF|RC|PL|FM|QZ|SS|GR|LVP|CPT|VCT|MR|VB|CM)-\d/; // v14.10.7: dropped CT|PT|WD|WC|ST -- too generic, false-pos on plan pages
   let validAnchorHits = 0;
   let m: RegExpExecArray | null;
   while ((m = roomAnchorRe.exec(normalized)) !== null) {
@@ -260,7 +260,7 @@ function parseFinishSchedulePage(text: string, pageNum: number): FinishScheduleR
   //   (2) No OTHER anchor appears before that code in the window.
   // This rejects things like "7100 Northland Circle" (no code) and
   // "2019 PROJECT 101 GREAT ROOM CT-1..." (101 appears before CT-1).
-  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  const codeProbeRe = /\b(?:AF|RC|PL|FM|QZ|SS|GR|LVP|CPT|VCT|MR|VB|CM)-\d/; // v14.10.7: dropped CT|PT|WD|WC|ST -- too generic, false-pos on plan pages
   const anchorProbeRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
   const validAnchors = anchors.filter(a => {
     const window = normalized.substring(a.startIdx, a.startIdx + 80);
@@ -391,6 +391,28 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
     }
   }
 
+  // v14.10.7: FS-density safety check.
+  // If fewer than 2 schedule pages found, OR under 10 percent of pages
+  // tested positive, treat the result as a false positive (likely the
+  // page detector misfired on plan-page detail callouts). Return empty.
+  // The call site should also gate by filename, but this is belt-and-suspenders.
+  // 10 percent threshold: Menifee has ~3 FS pages of 19 (15.8 percent), so this
+  // gives margin for continuation-detector misses without re-letting plan files through.
+  const totalPages = pages.length;
+  const fsRatio = totalPages > 0 ? schedulePages.length / totalPages : 0;
+  if (totalPages > 0 && (schedulePages.length < 2 || fsRatio < 0.10)) {
+    console.log(
+      `[v14.10.7] FS-density check FAILED: ${schedulePages.length}/${totalPages} pages (${(fsRatio * 100).toFixed(0)}%). ` +
+      `Need >=2 pages and >=10%. Discarding ${rooms.length} suspect rooms.`
+    );
+    return { rooms: [], legend, schedulePages: [], legendPages };
+  }
+  if (totalPages > 0) {
+    console.log(
+      `[v14.10.7] FS-density check PASSED: ${schedulePages.length}/${totalPages} pages (${(fsRatio * 100).toFixed(0)}%), ` +
+      `${rooms.length} rooms, ${legend.length} legend entries.`
+    );
+  }
   return { rooms, legend, schedulePages, legendPages };
 }
 
@@ -399,6 +421,21 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
 // ─────────────────────────────────────────────────────────────────
 
 export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[] {
+  // v14.10.7: instrumentation to demystify the rooms-to-items ratio.
+  // Rooms with zero counter+millwork codes legitimately produce zero items
+  // (their row only had floor/wall/ceiling finishes, no millwork-relevant codes).
+  // Log the breakdown so the previous '166 rooms -> 82 items' mystery is
+  // visible as expected behavior, not a dedupe bug.
+  const roomsWithMillwork = fs.rooms.filter(r => r.counters.length + r.millwork.length > 0).length;
+  const roomsWithoutMillwork = fs.rooms.length - roomsWithMillwork;
+  console.log(
+    `[v14.10.7] buildFinishScheduleItems: ${fs.rooms.length} total rooms, ` +
+    `${roomsWithMillwork} have millwork/counter codes, ${roomsWithoutMillwork} have only finish/wall codes (will produce 0 items each).`
+  );
+  // Bug 2 (carry-over): legend entries return 0 on multi-column legend layouts.
+  // parseFinishLegendPage uses a line-anchored regex that requires CODE on its
+  // own line OR followed only by MFR:. Multi-column PDF text breaks that.
+  // Fix lives in the multi-column legend P0 (server-side pdfplumber).
   const legendMap = new Map<string, FinishLegendEntry>();
   for (const e of fs.legend) legendMap.set(e.code, e);
 

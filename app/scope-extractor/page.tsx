@@ -224,21 +224,38 @@ export default function HomePage() {
       console.log(`[v14.10.5-debug] L3 AFTER ANALYZE: rooms.length=${rooms.length}, materialLegend=${Object.keys(projectContext.materialLegend || {}).length}, rooms first 5:`, rooms.slice(0, 5).map((r: any) => ({ name: r.roomName, pages: r.pageNums })));
       console.log(`[v14.10.5-debug] L3b ALL ROOMS:`, rooms.map((r: any) => `${r.roomName}@p${(r.pageNums || []).join(",")}`));
 
-      // v14.9.40: Finish-schedule parser — extract structured millwork from FS pages
+      // v14.9.40: Finish-schedule parser - extract structured millwork from FS pages
       // Non-fatal: if this throws, room-by-room extraction continues as before.
-      // v14.10.5: per-file FS parse — run parseFinishSchedule on each PDF's own
+      // v14.10.5: per-file FS parse - run parseFinishSchedule on each PDF's own
       // text instead of the combined text. Avoids false-positive FS detection
       // when one file is a finish schedule (Menifee) and another is plan
       // drawings (Ventura). Per-file results are merged.
+      // v14.10.7: filename keyword gate. Only run parser on files whose name
+      // suggests finish-schedule content. This is the primary defense against
+      // false-positive FS detection on plan files. The parser also has an
+      // FS-density safety net inside parseFinishSchedule itself.
+      const FS_FILENAME_RE = /finish|schedule|keys|\bfs[._\-]|\bfs\d/i;
+      const FS_NEGATIVE_RE = /\bplan(s|set)?\b|\belev|\bdetail|\benlarged|architectural\s*set/i;
+      const looksLikeFsFile = (name: string, tag: string): boolean => {
+        if (FS_FILENAME_RE.test(name)) return true;            // explicit positive
+        if (tag === "Specs" && !FS_NEGATIVE_RE.test(name)) return true;  // specs files often contain finish schedules
+        return false;
+      };
       try {
         const allFsItems: any[] = [];
         const allFsLegend: any[] = [];
         const allFsPages: number[] = [];
         let totalFsRooms = 0;
+        let filesGated = 0;
         for (const pf of perFile) {
-          console.log(`[v14.10.5] FS PARSE per-file: ${pf.name} tag=${pf.tag} textBytes=${pf.text.length}`);
+          if (!looksLikeFsFile(pf.name, pf.tag)) {
+            console.log(`[v14.10.7] FS GATE: skip ${pf.name} (tag=${pf.tag}, no FS keywords in filename)`);
+            filesGated++;
+            continue;
+          }
+          console.log(`[v14.10.7] FS PARSE per-file: ${pf.name} tag=${pf.tag} textBytes=${pf.text.length}`);
           const fsResult = parseFinishSchedule(pf.text);
-          console.log(`[v14.10.5] FS PARSE result for ${pf.name}: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
+          console.log(`[v14.10.7] FS PARSE result for ${pf.name}: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
           if (fsResult.rooms.length > 0) {
             const items = buildFinishScheduleItems(fsResult);
             allFsItems.push(...items);
@@ -247,16 +264,14 @@ export default function HomePage() {
             totalFsRooms += fsResult.rooms.length;
           }
         }
+        console.log(`[v14.10.7] FS PARSE TOTAL: ${totalFsRooms} rooms from ${perFile.length - filesGated}/${perFile.length} file(s) (${filesGated} gated by filename), ${allFsItems.length} items, ${allFsLegend.length} legend entries`);
         if (totalFsRooms > 0) {
-          console.log(`[v14.10.5] FS PARSE TOTAL: ${totalFsRooms} rooms from ${perFile.length} file(s), ${allFsItems.length} items, ${allFsLegend.length} legend entries`);
           projectContext.finishScheduleItems = allFsItems;
           projectContext.finishScheduleLegend = allFsLegend;
           projectContext.finishSchedulePages = allFsPages;
-        } else {
-          console.log("[v14.10.5] FS PARSE: no FS pages detected in any file");
         }
       } catch (fsErr) {
-        console.warn("[v14.10.5] Finish schedule parser failed, continuing without it:", fsErr);
+        console.warn("[v14.10.7] Finish schedule parser failed, continuing without it:", fsErr);
       }
 
       setStatus("extracting");
