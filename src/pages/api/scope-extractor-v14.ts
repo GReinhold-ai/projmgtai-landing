@@ -106,12 +106,28 @@ function extractProjectContext(pages: PageText[]): ProjectContext {
   const clientMatch = titleText.match(/(?:Owner|Client)[:\s]+([^\n]{3,60})/i);
   if (clientMatch) context.projectInfo.client = clientMatch[1].trim();
   
-  // Architect
-  const archMatch = allText.match(/(?:Architect|MACKENZIE|IPA|HKS|Gensler|DLR)[:\s]*([^\n]{0,60})/i);
-  if (archMatch) context.projectInfo.architect = archMatch[0].trim().substring(0, 60);
+  // Architect — v14.10.6: require colon after "Architect" (not just whitespace) to avoid
+  // matching "ARCHITECTURAL" in legend abbreviations. Validate result is title-case
+  // alphabetic content (rejects legend rows like "FINISH CPT  CARPET CH ...").
+  const archMatch = allText.match(/Architect\s*[:\-]\s*([A-Z][\w&,\.\s]{2,60})/i)
+                  || allText.match(/\b(MACKENZIE|HKS|Gensler|DLR|IPA|MACHADO|HOK|Perkins[\s+&]+Will)\s+([\w&,\.\s]{0,40})/i);
+  if (archMatch) {
+    const candidate = (archMatch[1] || archMatch[0] || "").trim();
+    // Reject if it looks like legend abbrev list (multiple all-caps codes)
+    const upperWordCount = (candidate.match(/\b[A-Z]{2,}\b/g) || []).length;
+    if (upperWordCount < 4 && candidate.length >= 3) {
+      context.projectInfo.architect = candidate.substring(0, 60);
+    }
+  }
   
-  // Address - look near project name
-  const addrMatch = titleText.match(/(\d+\s+(?:E|W|N|S|East|West|North|South)?\s*\w+\s+(?:St|Ave|Blvd|Rd|Dr|Way|Ln|Ct|Circle|Drive|Street|Avenue|Boulevard|Road)\b[^\n]*)/i);
+  // Address — v14.10.6: require state-abbr + zip code anchor OR explicit "Address:" label.
+  // Old regex matched "115 RESTROOM CT" (FS row + Court suffix) - too permissive.
+  // Conservative: better to leave Address blank than show finish-schedule garbage.
+  const addrMatch =
+    // Path A: explicit label prefix
+    titleText.match(/(?:Project\s+|Site\s+)?Address\s*[:\-]\s*(\d{1,5}\s+[A-Z][\w\s\.,]{3,80}?(?:\s+[A-Z]{2}\s+\d{5}|\.))/i)
+    // Path B: full address with state-abbr + zip code anchor at end
+    || titleText.match(/\b(\d{1,5}\s+(?:[NESW]\.?\s+|North\s+|South\s+|East\s+|West\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\s+(?:Street|Avenue|Boulevard|Road|Drive|Way|Lane|Court|Place|Parkway|Highway|Circle|St|Ave|Blvd|Rd|Dr|Ln|Pl|Pkwy|Hwy|Cir|Ct)\.?(?:[,\s]+[A-Z][\w\s]{1,30})?[,\s]+[A-Z]{2}\s+\d{5})/i);
   if (addrMatch) context.projectInfo.address = addrMatch[1].trim();
   
   // Plan set reference
