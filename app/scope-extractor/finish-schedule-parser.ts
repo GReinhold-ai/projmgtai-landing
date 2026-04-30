@@ -135,7 +135,9 @@ function isFinishSchedulePage(text: string): boolean {
   // [v14.9.41] continuation page detection: header doesn't repeat
   // on pages 2/3 of multi-page schedules. Detect by content shape:
   // 3+ room-number anchors each followed by a finish code within
-  // 80 chars.
+  // 200 chars (v14.10.8: was 80; widened to handle tile-heavy rows
+  // like restrooms where wall-tile codes push millwork codes past
+  // position 130).
   // [v14.9.42] phantom-room guard: legend pages have lots of
   // 'CODE-N MFR:' patterns that look like our anchor pattern,
   // so they were being misclassified as continuation pages.
@@ -144,11 +146,11 @@ function isFinishSchedulePage(text: string): boolean {
 
   const normalized = text.replace(/\s+/g, " ");
   const roomAnchorRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
-  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  const codeProbeRe = /\b(?:AF|RC|PL|FM|QZ|SS|GR|LVP|CPT|VCT|MR|VB|CM)-\d/; // v14.10.7: dropped CT|PT|WD|WC|ST -- too generic, false-pos on plan pages
   let validAnchorHits = 0;
   let m: RegExpExecArray | null;
   while ((m = roomAnchorRe.exec(normalized)) !== null) {
-    const window = normalized.substring(m.index, m.index + 80);
+    const window = normalized.substring(m.index, m.index + 200);  // v14.10.8: widened from 80
     if (codeProbeRe.test(window)) {
       validAnchorHits++;
       if (validAnchorHits >= 3) return true;
@@ -256,14 +258,18 @@ function parseFinishSchedulePage(text: string, pageNum: number): FinishScheduleR
 
   // Filter out false-positive anchors.
   // Valid row-anchor must satisfy:
-  //   (1) Within 80 chars there's a finish code like CT-1, WD-1, etc.
+  //   (1) Within 200 chars there's a finish code like AF-1, RC-1, etc.
+  //       (v14.10.8: widened from 80; tile-heavy rooms like restrooms
+  //       have CT-2/CT-3/CT-4/CT-5 wall codes pushing the millwork
+  //       codes SS-1 and RC-1 past position 130. Probe regex itself
+  //       is the false-positive defense, not the window size.)
   //   (2) No OTHER anchor appears before that code in the window.
   // This rejects things like "7100 Northland Circle" (no code) and
   // "2019 PROJECT 101 GREAT ROOM CT-1..." (101 appears before CT-1).
-  const codeProbeRe = /\b(?:CT|PT|WD|AF|RC|PL|QZ|SS|GR|CM|LVP|CPT|VCT|WC|ST|FM|MR|VB)-\d/;
+  const codeProbeRe = /\b(?:AF|RC|PL|FM|QZ|SS|GR|LVP|CPT|VCT|MR|VB|CM)-\d/; // v14.10.7: dropped CT|PT|WD|WC|ST -- too generic, false-pos on plan pages
   const anchorProbeRe = /(?:^|[\s;])(\d{2,4}[A-Z]?|S\d+|VESTIBULE|ELEVATORS)\s+(?=[A-Z])/g;
   const validAnchors = anchors.filter(a => {
-    const window = normalized.substring(a.startIdx, a.startIdx + 80);
+    const window = normalized.substring(a.startIdx, a.startIdx + 200);  // v14.10.8: widened from 80
     const codeMatch = codeProbeRe.exec(window);
     if (!codeMatch) return false;
     const preCodeText = window.substring(0, codeMatch.index);
@@ -391,6 +397,28 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
     }
   }
 
+  // v14.10.7: FS-density safety check.
+  // If fewer than 2 schedule pages found, OR under 10 percent of pages
+  // tested positive, treat the result as a false positive (likely the
+  // page detector misfired on plan-page detail callouts). Return empty.
+  // The call site should also gate by filename, but this is belt-and-suspenders.
+  // 10 percent threshold: Menifee has ~3 FS pages of 19 (15.8 percent), so this
+  // gives margin for continuation-detector misses without re-letting plan files through.
+  const totalPages = pages.length;
+  const fsRatio = totalPages > 0 ? schedulePages.length / totalPages : 0;
+  if (totalPages > 0 && (schedulePages.length < 2 || fsRatio < 0.10)) {
+    console.log(
+      `[v14.10.7] FS-density check FAILED: ${schedulePages.length}/${totalPages} pages (${(fsRatio * 100).toFixed(0)}%). ` +
+      `Need >=2 pages and >=10%. Discarding ${rooms.length} suspect rooms.`
+    );
+    return { rooms: [], legend, schedulePages: [], legendPages };
+  }
+  if (totalPages > 0) {
+    console.log(
+      `[v14.10.7] FS-density check PASSED: ${schedulePages.length}/${totalPages} pages (${(fsRatio * 100).toFixed(0)}%), ` +
+      `${rooms.length} rooms, ${legend.length} legend entries.`
+    );
+  }
   return { rooms, legend, schedulePages, legendPages };
 }
 
@@ -399,6 +427,21 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
 // ─────────────────────────────────────────────────────────────────
 
 export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[] {
+  // v14.10.7: instrumentation to demystify the rooms-to-items ratio.
+  // Rooms with zero counter+millwork codes legitimately produce zero items
+  // (their row only had floor/wall/ceiling finishes, no millwork-relevant codes).
+  // Log the breakdown so the previous '166 rooms -> 82 items' mystery is
+  // visible as expected behavior, not a dedupe bug.
+  const roomsWithMillwork = fs.rooms.filter(r => r.counters.length + r.millwork.length > 0).length;
+  const roomsWithoutMillwork = fs.rooms.length - roomsWithMillwork;
+  console.log(
+    `[v14.10.7] buildFinishScheduleItems: ${fs.rooms.length} total rooms, ` +
+    `${roomsWithMillwork} have millwork/counter codes, ${roomsWithoutMillwork} have only finish/wall codes (will produce 0 items each).`
+  );
+  // Bug 2 (carry-over): legend entries return 0 on multi-column legend layouts.
+  // parseFinishLegendPage uses a line-anchored regex that requires CODE on its
+  // own line OR followed only by MFR:. Multi-column PDF text breaks that.
+  // Fix lives in the multi-column legend P0 (server-side pdfplumber).
   const legendMap = new Map<string, FinishLegendEntry>();
   for (const e of fs.legend) legendMap.set(e.code, e);
 
