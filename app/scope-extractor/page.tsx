@@ -178,6 +178,8 @@ export default function HomePage() {
         const tf = files[fi];
         setProgress(`Reading file ${fi + 1} of ${files.length}: ${tf.file.name}...`);
         const r = await extractTextFromPdf(tf.file, tf.tag, globalOffset);
+        // v14.10.5-debug LOG 1
+        console.log(`[v14.10.5-debug] L1 file ${fi + 1}/${files.length} READ: name=${tf.file.name}, tag=${tf.tag}, pageCount=${r.pageCount}, textBytes=${r.text.length}, imagePages=${Object.keys(r.imagePages).length}, globalOffsetBefore=${globalOffset}, globalOffsetAfter=${globalOffset + r.pageCount}`);
         perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages });
         // Re-key image pages into the global namespace
         for (const [k, v] of Object.entries(r.imagePages)) combinedImagePages[Number(k)] = v as string;
@@ -198,10 +200,16 @@ export default function HomePage() {
       setProgress(`Analyzing ${pageCount} pages across ${files.length} file(s) — detecting rooms & material legend...`);
 
       const projectId = files[0].file.name.replace(/\.pdf$/i, "");
+      // v14.10.5-debug LOG 2
+      const _analyzeBody = JSON.stringify({ text: pdfText, projectId, mode: "analyze" });
+      console.log(`[v14.10.5-debug] L2 BEFORE ANALYZE: combinedTextBytes=${pdfText.length}, requestBodyBytes=${_analyzeBody.length}, requestBodyMB=${(_analyzeBody.length / 1024 / 1024).toFixed(2)}, perFileSummary=${JSON.stringify(perFile.map(p => ({n: p.name.slice(0, 30), pages: p.pageCount, bytes: p.text.length})))}`);
+      console.log(`[v14.10.5-debug] L2b TEXT SAMPLE — first 300 chars:`, pdfText.slice(0, 300));
+      console.log(`[v14.10.5-debug] L2c TEXT SAMPLE — chars at midpoint:`, pdfText.slice(Math.floor(pdfText.length / 2), Math.floor(pdfText.length / 2) + 300));
+      console.log(`[v14.10.5-debug] L2d TEXT SAMPLE — last 300 chars:`, pdfText.slice(-300));
       const analyzeRes = await fetch("/api/scope-extractor-v14", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: pdfText, projectId, mode: "analyze" }),
+        body: _analyzeBody,
       });
       if (!analyzeRes.ok) {
         const e = await analyzeRes.json().catch(() => ({}));
@@ -212,11 +220,18 @@ export default function HomePage() {
 
       const rooms = analysis.rooms || [];
       const projectContext = analysis.projectContext || {};
+      // v14.10.5-debug LOG 3
+      console.log(`[v14.10.5-debug] L3 AFTER ANALYZE: rooms.length=${rooms.length}, materialLegend=${Object.keys(projectContext.materialLegend || {}).length}, rooms first 5:`, rooms.slice(0, 5).map((r: any) => ({ name: r.roomName, pages: r.pageNums })));
+      console.log(`[v14.10.5-debug] L3b ALL ROOMS:`, rooms.map((r: any) => `${r.roomName}@p${(r.pageNums || []).join(",")}`));
 
       // v14.9.40: Finish-schedule parser — extract structured millwork from FS pages
       // Non-fatal: if this throws, room-by-room extraction continues as before.
       try {
+        // v14.10.5-debug LOG 4 (FS parse input)
+        console.log(`[v14.10.5-debug] L4 FS PARSE INPUT: textBytes=${pdfText.length}`);
         const fsResult = parseFinishSchedule(pdfText);
+        // v14.10.5-debug LOG 4b (FS parse result)
+        console.log(`[v14.10.5-debug] L4b FS PARSE RESULT: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
         if (fsResult.rooms.length > 0) {
           const fsItems = buildFinishScheduleItems(fsResult);
           console.log(
@@ -241,8 +256,15 @@ export default function HomePage() {
       let retryCount = 0;
       const MAX_RETRIES_PER_ROOM = 2;
 
+      // v14.10.5-debug LOG 5
+      console.log(`[v14.10.5-debug] L5 BEFORE EXTRACT LOOP: roomsToProcess=${rooms.length}`);
+
       for (let i = 0; i < rooms.length; i++) {
         const room = rooms[i];
+        // v14.10.5-debug LOG 6 (first 3 + last 1 only, to avoid console flood)
+        if (i < 3 || i === rooms.length - 1) {
+          console.log(`[v14.10.5-debug] L6 EXTRACT ${i + 1}/${rooms.length}: ${room.roomName} pages=${(room.pageNums || []).join(",")}`);
+        }
         setProgress(`Extracting room ${i + 1}/${rooms.length}: ${room.roomName} (pages ${room.pageNums.join(", ")})...`);
 
         try {
