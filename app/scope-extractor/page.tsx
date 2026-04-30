@@ -226,27 +226,37 @@ export default function HomePage() {
 
       // v14.9.40: Finish-schedule parser — extract structured millwork from FS pages
       // Non-fatal: if this throws, room-by-room extraction continues as before.
+      // v14.10.5: per-file FS parse — run parseFinishSchedule on each PDF's own
+      // text instead of the combined text. Avoids false-positive FS detection
+      // when one file is a finish schedule (Menifee) and another is plan
+      // drawings (Ventura). Per-file results are merged.
       try {
-        // v14.10.5-debug LOG 4 (FS parse input)
-        console.log(`[v14.10.5-debug] L4 FS PARSE INPUT: textBytes=${pdfText.length}`);
-        const fsResult = parseFinishSchedule(pdfText);
-        // v14.10.5-debug LOG 4b (FS parse result)
-        console.log(`[v14.10.5-debug] L4b FS PARSE RESULT: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
-        if (fsResult.rooms.length > 0) {
-          const fsItems = buildFinishScheduleItems(fsResult);
-          console.log(
-            `[v14.9.40] Finish schedule: ${fsResult.rooms.length} rooms parsed, ` +
-            `${fsItems.length} items from ${fsResult.schedulePages.length} FS pages ` +
-            `+ ${fsResult.legend.length} legend entries`
-          );
-          projectContext.finishScheduleItems = fsItems;
-          projectContext.finishScheduleLegend = fsResult.legend;
-          projectContext.finishSchedulePages = fsResult.schedulePages;
+        const allFsItems: any[] = [];
+        const allFsLegend: any[] = [];
+        const allFsPages: number[] = [];
+        let totalFsRooms = 0;
+        for (const pf of perFile) {
+          console.log(`[v14.10.5] FS PARSE per-file: ${pf.name} tag=${pf.tag} textBytes=${pf.text.length}`);
+          const fsResult = parseFinishSchedule(pf.text);
+          console.log(`[v14.10.5] FS PARSE result for ${pf.name}: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
+          if (fsResult.rooms.length > 0) {
+            const items = buildFinishScheduleItems(fsResult);
+            allFsItems.push(...items);
+            allFsLegend.push(...fsResult.legend);
+            allFsPages.push(...fsResult.schedulePages);
+            totalFsRooms += fsResult.rooms.length;
+          }
+        }
+        if (totalFsRooms > 0) {
+          console.log(`[v14.10.5] FS PARSE TOTAL: ${totalFsRooms} rooms from ${perFile.length} file(s), ${allFsItems.length} items, ${allFsLegend.length} legend entries`);
+          projectContext.finishScheduleItems = allFsItems;
+          projectContext.finishScheduleLegend = allFsLegend;
+          projectContext.finishSchedulePages = allFsPages;
         } else {
-          console.log("[v14.9.40] Finish schedule: no FS pages detected");
+          console.log("[v14.10.5] FS PARSE: no FS pages detected in any file");
         }
       } catch (fsErr) {
-        console.warn("[v14.9.40] Finish schedule parser failed, continuing without it:", fsErr);
+        console.warn("[v14.10.5] Finish schedule parser failed, continuing without it:", fsErr);
       }
 
       setStatus("extracting");
