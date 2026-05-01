@@ -138,56 +138,56 @@ export default function HomePage() {
       const content = await page.getTextContent();
       const text = content.items.map((it: any) => it.str).join(" ").trim();
       // v14.10.9: capture coordinate-tagged items for legend parser
+      // v14.10.9d: use pdf.js Util.applyTransform + Util.transform to handle
+      // page rotation correctly. Earlier hand-rolled rotation produced negative
+      // x0 values on Menifee (rotate=270). This delegates the math to pdf.js.
       try {
+        const Util = window.pdfjsLib.Util;
         const viewport = page.getViewport({ scale: 1.0 });
-        const pageHeight = viewport.height;
-        const pageWidth = viewport.width;
-        const rotate = (page as any).rotate || 0;
-        // v14.10.9c: dump rotation + first 4 raw items so we can decode the
-        // coordinate system. pdf.js getTextContent returns transforms in the
-        // PDF's native (unrotated) space; pages with rotate=90/180/270 need
-        // explicit rotation of x,y to match the visual layout.
+        const vw = viewport.width;
+        const vh = viewport.height;
+        // Sanity-log first 4 items in viewport space so we can verify the fix.
         if (globalPage <= 6) {
-          const sample = (content.items as any[]).slice(0, 4).map((it: any) => {
-            const tr = it.transform || [0,0,0,0,0,0];
-            return `{str:"${(it.str || "").slice(0, 30)}",t=[${tr[0].toFixed(2)},${tr[1].toFixed(2)},${tr[2].toFixed(2)},${tr[3].toFixed(2)},${tr[4].toFixed(1)},${tr[5].toFixed(1)}],w=${(it.width||0).toFixed(1)}}`;
+          const samples = (content.items as any[]).slice(0, 4).map((it: any) => {
+            const tr = it.transform || [1,0,0,1,0,0];
+            const [vx, vy] = Util.applyTransform([tr[4], tr[5]], viewport.transform);
+            const m = Util.transform(viewport.transform, tr);
+            return `{str:"${(it.str || "").slice(0, 24)}",vx=${vx.toFixed(1)},vy=${vy.toFixed(1)},m0=${m[0].toFixed(2)},m3=${m[3].toFixed(2)}}`;
           }).join(", ");
-          console.log(`[v14.10.9c-raw] page ${globalPage} rotate=${rotate} viewport=${pageWidth.toFixed(0)}x${pageHeight.toFixed(0)} samples: ${sample}`);
+          console.log(`[v14.10.9d-vp] page ${globalPage} viewport=${vw.toFixed(0)}x${vh.toFixed(0)} samples: ${samples}`);
         }
         const items: PdfTextItem[] = [];
         for (const it of content.items as any[]) {
           if (!it.str || !it.transform) continue;
           const tr = it.transform as number[];
-          let x0: number, top: number, fontHeight: number, width: number;
-          width = (it.width as number) || 0;
-          fontHeight = Math.abs(tr[3]) || Math.abs(tr[0]) || 10;
-          // Rotate native coords (tr[4]=x, tr[5]=y baseline, bottom-left origin)
-          // into top-left visual coords matching what pdfplumber reports.
-          if (rotate === 90) {
-            // Native (x,y) -> visual (y, pageWidth - x). Width becomes height-equivalent.
-            x0 = tr[5];
-            top = pageWidth - tr[4] - fontHeight;
-          } else if (rotate === 180) {
-            x0 = pageWidth - tr[4] - width;
-            top = tr[5];  // bottom-origin still; convert below
-            top = pageHeight - (top + fontHeight);
-          } else if (rotate === 270) {
-            x0 = pageHeight - tr[5] - fontHeight;
-            top = tr[4];
-          } else {
-            x0 = tr[4];
-            top = pageHeight - (tr[5] + fontHeight);
-          }
-          const bottom = top + fontHeight;
-          // For text rendered with a rotation matrix, abs(transform diagonals) > 0
-          // (just rotated). Test for upright as: not horizontal-flipped, not vertical.
-          // Words running TTB (top-to-bottom) have tr[0]==0 with non-zero tr[1]/tr[2].
-          // Truly upright after page rotation: matrix is identity-ish on the diag.
-          const isVerticalText = Math.abs(tr[0]) < 0.01 && Math.abs(tr[3]) < 0.01;
-          const upright = !isVerticalText;
-          items.push({ str: it.str, x0, x1: x0 + width, top, bottom, upright });
+          // Apply viewport transform to the baseline origin (tr[4], tr[5]).
+          // Returns (vx, vy) in CSS pixel space — origin at top-left of viewport,
+          // y axis pointing down. This is what pdfplumber's "top" convention is.
+          const [vx, vy] = Util.applyTransform([tr[4], tr[5]], viewport.transform);
+          // Multiply transforms to determine the rendered text orientation.
+          const m = Util.transform(viewport.transform, tr);
+          // Rendered font scale (viewport-space) is m[3] for vertical extent.
+          // Width approximation: prefer item.width when present, scale otherwise.
+          const renderedFontHeight = Math.abs(m[3]) || Math.abs(m[0]) || 10;
+          // Item.width is the ADVANCE in text-space units, not viewport. Scale by
+          // ratio between viewport.transform's diag and unit. For a non-rotated
+          // identity case width is already in viewport pts.
+          const widthScale = Math.sqrt(m[0]*m[0] + m[1]*m[1]) / (Math.abs(tr[0]) || 1);
+          const renderedWidth = ((it.width as number) || 0) * (widthScale || 1);
+          // Top-left origin: (vx, vy) is the BASELINE point. The top of the glyph
+          // is vy - renderedFontHeight (y goes down), so adjust accordingly.
+          // But applyTransform already returns y in top-down sense, so:
+          const x0 = vx;
+          const top = vy - renderedFontHeight;
+          const bottom = vy;
+          // Upright in viewport space: positive m[0] (x-scale) and m[3] (y-scale).
+          // For rotated pages pdf.js may give m[3] negative (y flipped) for upright
+          // text — that is normal because viewport y axis is inverted relative to
+          // PDF y. Test using m[0] only: positive means text reads left-to-right.
+          const upright = m[0] > 0.01;
+          items.push({ str: it.str, x0, x1: x0 + renderedWidth, top, bottom, upright });
         }
-        pageItems.push({ pageNum: globalPage, pageHeight: rotate === 90 || rotate === 270 ? pageWidth : pageHeight, items });
+        pageItems.push({ pageNum: globalPage, pageHeight: vh, items });
       } catch (coordErr) {
         console.warn(`[v14.10.9] coord capture failed page ${globalPage}:`, coordErr);
       }
