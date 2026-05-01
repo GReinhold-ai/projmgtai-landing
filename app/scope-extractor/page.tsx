@@ -9,7 +9,8 @@ import Head from "next/head";
 import Link from "next/link";
 // v14.9.31: Assembly decomposer — AWI 300 parts explosion
 import { decomposeItems, partsToAOA } from "./assembly-decomposer";
-import { parseFinishSchedule, buildFinishScheduleItems } from "./finish-schedule-parser";
+import { parseFinishSchedule, parseFinishScheduleWithCoords, buildFinishScheduleItems } from "./finish-schedule-parser";
+import type { PdfTextItem, PageItems } from "./finish-schedule-parser";
 
 type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "done" | "error";
 
@@ -118,13 +119,15 @@ export default function HomePage() {
     addFiles(Array.from(e.target.files || []));
   };
 
-  async function extractTextFromPdf(pdfFile: File, tag: string = "Plans", globalOffset: number = 0): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
+  async function extractTextFromPdf(pdfFile: File, tag: string = "Plans", globalOffset: number = 0): Promise<{ text: string; pageCount: number; imagePages: Record<number, string>; pageItems: PageItems[] }> {
     const buf = await pdfFile.arrayBuffer();
     // v14.9.39: Store buffer for later Blob upload
     pdfBuffers.current = [...(pdfBuffers.current || []), { name: pdfFile.name, buffer: buf }];
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
     const imagePages: Record<number, string> = {};
+    // v14.10.9: capture per-page coordinate items for legend coord-parsing
+    const pageItems: PageItems[] = [];
     // v14.10.4: tag uppercase + underscore form for the [TAG] marker
     const tagToken = tag.toUpperCase().replace(/\s+/g, "_");
     
@@ -134,6 +137,60 @@ export default function HomePage() {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text = content.items.map((it: any) => it.str).join(" ").trim();
+      // v14.10.9: capture coordinate-tagged items for legend parser
+      // v14.10.9d: use pdf.js Util.applyTransform + Util.transform to handle
+      // page rotation correctly. Earlier hand-rolled rotation produced negative
+      // x0 values on Menifee (rotate=270). This delegates the math to pdf.js.
+      try {
+        const Util = window.pdfjsLib.Util;
+        const viewport = page.getViewport({ scale: 1.0 });
+        const vw = viewport.width;
+        const vh = viewport.height;
+        // Sanity-log first 4 items in viewport space so we can verify the fix.
+        if (globalPage <= 6) {
+          const samples = (content.items as any[]).slice(0, 4).map((it: any) => {
+            const tr = it.transform || [1,0,0,1,0,0];
+            const [vx, vy] = Util.applyTransform([tr[4], tr[5]], viewport.transform);
+            const m = Util.transform(viewport.transform, tr);
+            return `{str:"${(it.str || "").slice(0, 24)}",vx=${vx.toFixed(1)},vy=${vy.toFixed(1)},m0=${m[0].toFixed(2)},m3=${m[3].toFixed(2)}}`;
+          }).join(", ");
+          console.log(`[v14.10.9d-vp] page ${globalPage} viewport=${vw.toFixed(0)}x${vh.toFixed(0)} samples: ${samples}`);
+        }
+        const items: PdfTextItem[] = [];
+        for (const it of content.items as any[]) {
+          if (!it.str || !it.transform) continue;
+          const tr = it.transform as number[];
+          // Apply viewport transform to the baseline origin (tr[4], tr[5]).
+          // Returns (vx, vy) in CSS pixel space — origin at top-left of viewport,
+          // y axis pointing down. This is what pdfplumber's "top" convention is.
+          const [vx, vy] = Util.applyTransform([tr[4], tr[5]], viewport.transform);
+          // Multiply transforms to determine the rendered text orientation.
+          const m = Util.transform(viewport.transform, tr);
+          // Rendered font scale (viewport-space) is m[3] for vertical extent.
+          // Width approximation: prefer item.width when present, scale otherwise.
+          const renderedFontHeight = Math.abs(m[3]) || Math.abs(m[0]) || 10;
+          // Item.width is the ADVANCE in text-space units, not viewport. Scale by
+          // ratio between viewport.transform's diag and unit. For a non-rotated
+          // identity case width is already in viewport pts.
+          const widthScale = Math.sqrt(m[0]*m[0] + m[1]*m[1]) / (Math.abs(tr[0]) || 1);
+          const renderedWidth = ((it.width as number) || 0) * (widthScale || 1);
+          // Top-left origin: (vx, vy) is the BASELINE point. The top of the glyph
+          // is vy - renderedFontHeight (y goes down), so adjust accordingly.
+          // But applyTransform already returns y in top-down sense, so:
+          const x0 = vx;
+          const top = vy - renderedFontHeight;
+          const bottom = vy;
+          // Upright in viewport space: positive m[0] (x-scale) and m[3] (y-scale).
+          // For rotated pages pdf.js may give m[3] negative (y flipped) for upright
+          // text — that is normal because viewport y axis is inverted relative to
+          // PDF y. Test using m[0] only: positive means text reads left-to-right.
+          const upright = m[0] > 0.01;
+          items.push({ str: it.str, x0, x1: x0 + renderedWidth, top, bottom, upright });
+        }
+        pageItems.push({ pageNum: globalPage, pageHeight: vh, items });
+      } catch (coordErr) {
+        console.warn(`[v14.10.9] coord capture failed page ${globalPage}:`, coordErr);
+      }
       // v14.10.4: include [TAG] in page marker so server can stratify if needed
       pages.push(`--- PAGE ${globalPage} [${tagToken}] ---\n${text}`);
       
@@ -160,7 +217,7 @@ export default function HomePage() {
         }
       }
     }
-    return { text: pages.join("\n\n"), pageCount: pdf.numPages, imagePages };
+    return { text: pages.join("\n\n"), pageCount: pdf.numPages, imagePages, pageItems };
   }
 
   const handleExtract = async () => {
@@ -170,7 +227,7 @@ export default function HomePage() {
 
     try {
       // v14.10.4: Read every file, accumulate text with [TAG] page markers and global page numbering
-      const perFile: { name: string; tag: FileTag; text: string; pageCount: number; imagePages: Record<number, string> }[] = [];
+      const perFile: { name: string; tag: FileTag; text: string; pageCount: number; imagePages: Record<number, string>; pageItems: PageItems[] }[] = [];
       let globalOffset = 0;
       const combinedImagePages: Record<number, string> = {};
 
@@ -180,7 +237,7 @@ export default function HomePage() {
         const r = await extractTextFromPdf(tf.file, tf.tag, globalOffset);
         // v14.10.5-debug LOG 1
         console.log(`[v14.10.5-debug] L1 file ${fi + 1}/${files.length} READ: name=${tf.file.name}, tag=${tf.tag}, pageCount=${r.pageCount}, textBytes=${r.text.length}, imagePages=${Object.keys(r.imagePages).length}, globalOffsetBefore=${globalOffset}, globalOffsetAfter=${globalOffset + r.pageCount}`);
-        perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages });
+        perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages, pageItems: r.pageItems });
         // Re-key image pages into the global namespace
         for (const [k, v] of Object.entries(r.imagePages)) combinedImagePages[Number(k)] = v as string;
         globalOffset += r.pageCount;
@@ -254,7 +311,7 @@ export default function HomePage() {
             continue;
           }
           console.log(`[v14.10.7] FS PARSE per-file: ${pf.name} tag=${pf.tag} textBytes=${pf.text.length}`);
-          const fsResult = parseFinishSchedule(pf.text);
+          const fsResult = parseFinishScheduleWithCoords(pf.text, pf.pageItems);
           console.log(`[v14.10.7] FS PARSE result for ${pf.name}: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
           if (fsResult.rooms.length > 0) {
             const items = buildFinishScheduleItems(fsResult);

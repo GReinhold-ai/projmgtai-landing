@@ -384,16 +384,19 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
   const legendPages: number[] = [];
 
   for (const { pageNum, text } of pages) {
-    const fsCheck = isFinishSchedulePage(text);
+    // v14.10.9: check legend FIRST — schedule detector also matches "ITEM NO."
+    // and "ARCHITECTURAL FINISH" keywords that legend pages have, so without
+    // this ordering legend pages get misclassified as schedule pages.
     const legCheck = isFinishLegendPage(text);
-    if (fsCheck) {
-      schedulePages.push(pageNum);
-      const pageRooms = parseFinishSchedulePage(text, pageNum);
-      rooms.push(...pageRooms);
-    } else if (legCheck) {
+    const fsCheck = !legCheck && isFinishSchedulePage(text);
+    if (legCheck) {
       legendPages.push(pageNum);
       const pageEntries = parseFinishLegendPage(text);
       legend.push(...pageEntries);
+    } else if (fsCheck) {
+      schedulePages.push(pageNum);
+      const pageRooms = parseFinishSchedulePage(text, pageNum);
+      rooms.push(...pageRooms);
     }
   }
 
@@ -452,7 +455,7 @@ export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[]
     if (e.manufacturer) parts.push(e.manufacturer);
     if (e.pattern) parts.push(e.pattern);
     if (e.color) parts.push(e.color);
-    return parts.length ? `${code} — ${parts.join(" ")}` : code;
+    return parts.length ? parts.join(" / ") : code;
   };
 
   // item_type heuristic by prefix
@@ -509,4 +512,321 @@ export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[]
     }
   }
   return items;
+}
+
+
+// === v14.10.9: Coordinate-based legend parser ===
+//
+// Replaces the line-anchored regex approach with column-clustering on word
+// coordinates. The old parseFinishLegendPage stays as fallback when items
+// arent available (e.g., tests, or upstream callers that pass only text).
+//
+// Algorithm validated locally against Menifee Lakes Finish Keys (FS.4-FS.6):
+// 71 entries / 7-of-7 spot checks pass / no title-block bleed.
+// Test harness: tests/test-legend-coords.mjs
+//
+// pdf.js coordinate source: page.getTextContent().items[].transform = [a,b,c,d,x,y]
+// where (x,y) is the baseline origin. We compute upright = (transform[0] > 0 && transform[3] > 0).
+
+export interface PdfTextItem {
+  str: string;
+  x0: number;
+  x1: number;
+  top: number;
+  bottom: number;
+  upright: boolean;
+}
+
+const COORD_LABEL_KEYWORDS = new Set([
+  "MFR:", "CONTACT:", "PATTERN:", "COLOR:", "SIZE:", "MATERIAL:",
+  "WIDTH:", "TYPE:", "REPEAT:", "GAUGE:", "INSTALLED:", "INSTALLATION:",
+  "FINISH:", "BACKING:", "GROUT", "GRADE:", "EDGE:",
+  "WEARLAYER:", "CLOSURES:", "INTERIORS:", "HARDWARE:", "PROFILE:",
+  "APPLICATION:", "COMPOSITION:", "SUBSTRATE:", "SUBTRATE:",
+  "PILE", "FIRE",
+]);
+
+const COORD_CODE_RE = /^([A-Z]{1,4})-?(\d+[A-Z]?)$/;
+
+function coordIsCode(text: string): boolean {
+  if (!text) return false;
+  if (text === "EPOXY" || text === "FRP" || text === "SC") return true;
+  const m = text.match(COORD_CODE_RE);
+  if (!m) return false;
+  return CODE_PREFIXES.includes(m[1] as any);
+}
+
+interface ColumnGroup {
+  minX: number;
+  maxX: number;
+  words: PdfTextItem[];
+  peakX: number;
+  peakCount: number;
+  fallback?: boolean;
+}
+
+function clusterColumns(
+  words: PdfTextItem[],
+  pageHeight: number,
+  opts: { minCount?: number; columnRadius?: number; bucketSize?: number; pageRightEdge?: number; titleBlockCutoffRatio?: number } = {}
+): ColumnGroup[] {
+  const minCount = opts.minCount ?? 3;
+  const columnRadius = opts.columnRadius ?? 500;
+  const bucketSize = opts.bucketSize ?? 10;
+  const pageRightEdge = opts.pageRightEdge ?? 2700;
+  const titleBlockCutoffRatio = opts.titleBlockCutoffRatio ?? 0.85;
+
+  if (words.length === 0) return [];
+
+  // Drop rotated words (title-block fragments running vertically)
+  const upright_words = words.filter(w => w.upright !== false);
+
+  // Drop words near page bottom (catches upright SCHEDULE/DATE in revision band)
+  const cutoff = pageHeight > 0 ? pageHeight * titleBlockCutoffRatio : Infinity;
+  const filtered_words = upright_words.filter(w => w.top < cutoff);
+
+  // Histogram x0 buckets
+  const buckets = new Map<number, number>();
+  for (const w of filtered_words) {
+    const b = Math.floor(w.x0 / bucketSize) * bucketSize;
+    buckets.set(b, (buckets.get(b) || 0) + 1);
+  }
+  const peaks = [...buckets.entries()]
+    .filter(([, n]) => n >= minCount)
+    .map(([x, n]) => ({ x, n }))
+    .sort((a, b) => a.x - b.x);
+
+  // Merge adjacent peaks within columnRadius (intra-column label positions)
+  const colStarts: { startX: number; totalN: number }[] = [];
+  for (const peak of peaks) {
+    const last = colStarts[colStarts.length - 1];
+    if (last && peak.x - last.startX < columnRadius) {
+      last.totalN += peak.n;
+    } else {
+      colStarts.push({ startX: peak.x, totalN: peak.n });
+    }
+  }
+
+  // Drop right-edge stragglers
+  const filtered = colStarts.filter(c => c.startX < pageRightEdge);
+
+  // Sparse-page fallback: if no columns found but page has codes, treat as one column
+  if (filtered.length === 0) {
+    const hasCodes = filtered_words.some(w => coordIsCode(w.str));
+    if (hasCodes) {
+      return [{
+        minX: 0,
+        maxX: Infinity,
+        words: filtered_words,
+        peakX: 0,
+        peakCount: filtered_words.length,
+        fallback: true,
+      }];
+    }
+    return [];
+  }
+
+  const cols: ColumnGroup[] = filtered.map((cs, i) => {
+    const minX = cs.startX - bucketSize;
+    const maxX = i + 1 < filtered.length ? filtered[i + 1].startX - bucketSize : Infinity;
+    return { minX, maxX, words: [], peakX: cs.startX, peakCount: cs.totalN };
+  });
+
+  for (const w of filtered_words) {
+    const col = cols.find(c => w.x0 >= c.minX && w.x0 < c.maxX);
+    if (col) col.words.push(w);
+  }
+
+  return cols.filter(c => c.words.some(w => coordIsCode(w.str)));
+}
+
+function groupByLine(colWords: PdfTextItem[], lineGap: number = 8): PdfTextItem[][] {
+  const sorted = [...colWords].sort((a, b) => a.top - b.top || a.x0 - b.x0);
+  const lines: PdfTextItem[][] = [];
+  for (const w of sorted) {
+    if (lines.length === 0) { lines.push([w]); continue; }
+    const lastLine = lines[lines.length - 1];
+    const lastTop = lastLine[lastLine.length - 1].top;
+    if (Math.abs(w.top - lastTop) <= lineGap) lastLine.push(w);
+    else lines.push([w]);
+  }
+  return lines.map(line => line.sort((a, b) => a.x0 - b.x0));
+}
+
+function parseColumnEntries(colWords: PdfTextItem[], sourcePage: number): FinishLegendEntry[] {
+  const lines = groupByLine(colWords);
+  const entries: FinishLegendEntry[] = [];
+  let current: FinishLegendEntry | null = null;
+
+  const closeCurrent = () => {
+    if (current && current.code) entries.push(current);
+    current = null;
+  };
+
+  // v14.10.9e: pdf.js getTextContent returns text runs that often contain
+  // both a label and its value combined into one item ("MFR: Dal Tile" as a
+  // single string). The pdfplumber-tuned parser expected label and value to
+  // be separate tokens. Solution: scan each token for known prefixes and
+  // peel off the label, treating the remainder as the value. Also handles
+  // tokens that start with a code ("AF-1 MFR: Faux Wood Beams" as one item).
+  const labelPrefixes = [
+    "MFR:", "PATTERN:", "COLOR:", "SIZE:", "MATERIAL:",
+    "WIDTH:", "TYPE:", "REPEAT:", "GAUGE:", "INSTALLED:", "INSTALLATION:",
+    "FINISH:", "BACKING:", "GRADE:", "EDGE:",
+    "WEARLAYER:", "CLOSURES:", "INTERIORS:", "HARDWARE:", "PROFILE:",
+    "APPLICATION:", "COMPOSITION:", "SUBSTRATE:", "SUBTRATE:",
+    "CONTACT:",  // ignored, but consumed so it does not corrupt the next field
+  ];
+
+  // Returns [label, value] if str starts with a known label prefix, else null.
+  // Label is uppercased canonical form ("MFR:"), value is the remainder.
+  const peelLabel = (str: string): [string, string] | null => {
+    const upper = str.toUpperCase();
+    for (const lbl of labelPrefixes) {
+      if (upper.startsWith(lbl)) {
+        const value = str.substring(lbl.length).trim();
+        return [lbl, value];
+      }
+    }
+    return null;
+  };
+
+  // Returns [code, remainder] if str starts with a known code, else null.
+  const peelCode = (str: string): [string, string] | null => {
+    // Match a code at the start of the string, possibly followed by whitespace
+    const m = str.match(/^([A-Z]{1,4}-?\d+[A-Z]?|EPOXY|FRP|SC)(?:\s+(.*))?$/);
+    if (!m) return null;
+    if (!coordIsCode(m[1])) return null;
+    const codeRaw = m[1];
+    const cm = codeRaw.match(COORD_CODE_RE);
+    const codeNorm = cm && !codeRaw.includes("-") ? `${cm[1]}-${cm[2]}` : codeRaw;
+    return [codeNorm, (m[2] || "").trim()];
+  };
+
+  const setField = (label: string, value: string) => {
+    if (!current || !value) return;
+    if (label === "MFR:" && !current.manufacturer) current.manufacturer = value;
+    else if (label === "PATTERN:" && !current.pattern) current.pattern = value;
+    else if (label === "COLOR:" && !current.color) current.color = value;
+    else if (label === "SIZE:" && !current.size) current.size = value;
+    else if (label === "MATERIAL:" && !current.material) current.material = value;
+  };
+
+  for (const line of lines) {
+    for (const tok of line) {
+      const str = tok.str;
+      if (!str || !str.trim()) continue;
+
+      // Try to peel a code first (handles "AF-1" or "AF-1 MFR: Faux Wood Beams")
+      const codeMatch = peelCode(str);
+      if (codeMatch) {
+        closeCurrent();
+        current = {
+          code: codeMatch[0],
+          manufacturer: "",
+          pattern: "",
+          color: "",
+          size: "",
+          material: "",
+          raw: "",
+        };
+        // If there is a remainder after the code, it might be a label+value
+        const remainder = codeMatch[1];
+        if (remainder) {
+          const lbl = peelLabel(remainder);
+          if (lbl) setField(lbl[0], lbl[1]);
+        }
+        continue;
+      }
+
+      // Try to peel a label prefix from the front of this token
+      const lbl = peelLabel(str);
+      if (lbl) {
+        setField(lbl[0], lbl[1]);
+        continue;
+      }
+      // Unrecognized token: ignore (whitespace-only handled above)
+    }
+  }
+  closeCurrent();
+  return entries.filter(e => e.manufacturer);
+}
+
+export function parseFinishLegendPageByCoords(items: PdfTextItem[], pageNum: number, pageHeight: number): FinishLegendEntry[] {
+  // v14.10.9-debug: dump coordinate diagnostics so we can compare browser pdf.js
+  // values against the local pdfplumber fixture that the algorithm was tuned on.
+  if (items.length > 0) {
+    const xs = items.map(it => it.x0).sort((a, b) => a - b);
+    const ys = items.map(it => it.top).sort((a, b) => a - b);
+    const upright_n = items.filter(it => it.upright).length;
+    const sample = items.slice(0, 8).map(it => `{str:"${it.str}",x0:${it.x0.toFixed(1)},top:${it.top.toFixed(1)},upright:${it.upright}}`).join(", ");
+    console.log(`[v14.10.9-debug] page ${pageNum} h=${pageHeight.toFixed(0)} items=${items.length} upright=${upright_n} x0 range=[${xs[0].toFixed(1)},${xs[xs.length-1].toFixed(1)}] top range=[${ys[0].toFixed(1)},${ys[ys.length-1].toFixed(1)}]`);
+    console.log(`[v14.10.9-debug] page ${pageNum} first 8 items: ${sample}`);
+  }
+  const cols = clusterColumns(items, pageHeight);
+  const entries: FinishLegendEntry[] = [];
+  for (const col of cols) {
+    entries.push(...parseColumnEntries(col.words, pageNum));
+  }
+  console.log(`[v14.10.9] FS legend coord-parse page ${pageNum}: ${cols.length} cols, ${entries.length} entries`);
+  return entries;
+}
+
+// === v14.10.9 wrapper for parseFinishSchedule ===
+// Accepts optional per-page coordinate items. When provided for a page detected
+// as a legend page, uses the new coord-based parser. Falls back to the old
+// line-anchored parser when coords aren't supplied.
+
+export interface PageItems {
+  pageNum: number;
+  pageHeight: number;
+  items: PdfTextItem[];
+}
+
+export function parseFinishScheduleWithCoords(
+  allPageText: string,
+  pageItemsArr: PageItems[]
+): FinishScheduleResult {
+  // Run normal parse first to get rooms + page detection
+  const result = parseFinishSchedule(allPageText);
+
+  // If we have coordinate data, replace the legend with coord-parsed entries
+  if (pageItemsArr.length > 0) {
+    const itemsByPage = new Map<number, PageItems>();
+    for (const pi of pageItemsArr) itemsByPage.set(pi.pageNum, pi);
+
+    const coordLegend: FinishLegendEntry[] = [];
+    for (const pageNum of result.legendPages) {
+      const pi = itemsByPage.get(pageNum);
+      if (!pi) continue;
+      coordLegend.push(...parseFinishLegendPageByCoords(pi.items, pi.pageNum, pi.pageHeight));
+    }
+
+    // Also try pages that werent classified as legend but are FS-adjacent
+    // (sometimes legend pages are bundled with schedule pages). Skip if the
+    // page already has coord-parsed entries.
+    const coordCodes = new Set(coordLegend.map(e => e.code));
+    for (const pi of pageItemsArr) {
+      if (result.legendPages.includes(pi.pageNum)) continue;
+      if (result.schedulePages.includes(pi.pageNum)) continue;
+      // Probe: does this page have lots of MFR: tokens? If so, try parsing.
+      const mfrCount = pi.items.filter(it => it.str === "MFR:").length;
+      if (mfrCount >= 3) {
+        const extras = parseFinishLegendPageByCoords(pi.items, pi.pageNum, pi.pageHeight);
+        for (const e of extras) {
+          if (!coordCodes.has(e.code)) {
+            coordLegend.push(e);
+            coordCodes.add(e.code);
+          }
+        }
+      }
+    }
+
+    if (coordLegend.length > 0) {
+      console.log(`[v14.10.9] FS legend coord-parse: replacing ${result.legend.length} text-only entries with ${coordLegend.length} coord-parsed entries`);
+      return { ...result, legend: coordLegend };
+    }
+  }
+
+  return result;
 }
