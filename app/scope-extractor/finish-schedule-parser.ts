@@ -663,17 +663,66 @@ function parseColumnEntries(colWords: PdfTextItem[], sourcePage: number): Finish
     current = null;
   };
 
-  for (const line of lines) {
-    let i = 0;
-    while (i < line.length) {
-      const tok = line[i];
+  // v14.10.9e: pdf.js getTextContent returns text runs that often contain
+  // both a label and its value combined into one item ("MFR: Dal Tile" as a
+  // single string). The pdfplumber-tuned parser expected label and value to
+  // be separate tokens. Solution: scan each token for known prefixes and
+  // peel off the label, treating the remainder as the value. Also handles
+  // tokens that start with a code ("AF-1 MFR: Faux Wood Beams" as one item).
+  const labelPrefixes = [
+    "MFR:", "PATTERN:", "COLOR:", "SIZE:", "MATERIAL:",
+    "WIDTH:", "TYPE:", "REPEAT:", "GAUGE:", "INSTALLED:", "INSTALLATION:",
+    "FINISH:", "BACKING:", "GRADE:", "EDGE:",
+    "WEARLAYER:", "CLOSURES:", "INTERIORS:", "HARDWARE:", "PROFILE:",
+    "APPLICATION:", "COMPOSITION:", "SUBSTRATE:", "SUBTRATE:",
+    "CONTACT:",  // ignored, but consumed so it does not corrupt the next field
+  ];
 
-      if (coordIsCode(tok.str)) {
+  // Returns [label, value] if str starts with a known label prefix, else null.
+  // Label is uppercased canonical form ("MFR:"), value is the remainder.
+  const peelLabel = (str: string): [string, string] | null => {
+    const upper = str.toUpperCase();
+    for (const lbl of labelPrefixes) {
+      if (upper.startsWith(lbl)) {
+        const value = str.substring(lbl.length).trim();
+        return [lbl, value];
+      }
+    }
+    return null;
+  };
+
+  // Returns [code, remainder] if str starts with a known code, else null.
+  const peelCode = (str: string): [string, string] | null => {
+    // Match a code at the start of the string, possibly followed by whitespace
+    const m = str.match(/^([A-Z]{1,4}-?\d+[A-Z]?|EPOXY|FRP|SC)(?:\s+(.*))?$/);
+    if (!m) return null;
+    if (!coordIsCode(m[1])) return null;
+    const codeRaw = m[1];
+    const cm = codeRaw.match(COORD_CODE_RE);
+    const codeNorm = cm && !codeRaw.includes("-") ? `${cm[1]}-${cm[2]}` : codeRaw;
+    return [codeNorm, (m[2] || "").trim()];
+  };
+
+  const setField = (label: string, value: string) => {
+    if (!current || !value) return;
+    if (label === "MFR:" && !current.manufacturer) current.manufacturer = value;
+    else if (label === "PATTERN:" && !current.pattern) current.pattern = value;
+    else if (label === "COLOR:" && !current.color) current.color = value;
+    else if (label === "SIZE:" && !current.size) current.size = value;
+    else if (label === "MATERIAL:" && !current.material) current.material = value;
+  };
+
+  for (const line of lines) {
+    for (const tok of line) {
+      const str = tok.str;
+      if (!str || !str.trim()) continue;
+
+      // Try to peel a code first (handles "AF-1" or "AF-1 MFR: Faux Wood Beams")
+      const codeMatch = peelCode(str);
+      if (codeMatch) {
         closeCurrent();
-        const m = tok.str.match(COORD_CODE_RE);
-        const codeNorm = m && !tok.str.includes("-") ? `${m[1]}-${m[2]}` : tok.str;
         current = {
-          code: codeNorm,
+          code: codeMatch[0],
           manufacturer: "",
           pattern: "",
           color: "",
@@ -681,41 +730,22 @@ function parseColumnEntries(colWords: PdfTextItem[], sourcePage: number): Finish
           material: "",
           raw: "",
         };
-        i++;
-        // Inline MFR: handler when "<CODE> MFR: <vals>" all on one line
-        if (i < line.length && line[i].str === "MFR:") {
-          i++;
-          const valTokens: string[] = [];
-          while (i < line.length && !COORD_LABEL_KEYWORDS.has(line[i].str.toUpperCase()) && !coordIsCode(line[i].str)) {
-            valTokens.push(line[i].str);
-            i++;
-          }
-          if (current) current.manufacturer = valTokens.join(" ").trim();
+        // If there is a remainder after the code, it might be a label+value
+        const remainder = codeMatch[1];
+        if (remainder) {
+          const lbl = peelLabel(remainder);
+          if (lbl) setField(lbl[0], lbl[1]);
         }
         continue;
       }
 
-      const tokStr = tok.str.toUpperCase();
-      if (COORD_LABEL_KEYWORDS.has(tokStr)) {
-        if (!current) { i++; continue; }
-        i++;
-        const valTokens: string[] = [];
-        while (i < line.length && !COORD_LABEL_KEYWORDS.has(line[i].str.toUpperCase()) && !coordIsCode(line[i].str)) {
-          valTokens.push(line[i].str);
-          i++;
-        }
-        const value = valTokens.join(" ").trim();
-        if (current) {
-          if (tokStr === "MFR:" && !current.manufacturer) current.manufacturer = value;
-          else if (tokStr === "PATTERN:" && !current.pattern) current.pattern = value;
-          else if (tokStr === "COLOR:" && !current.color) current.color = value;
-          else if (tokStr === "SIZE:" && !current.size) current.size = value;
-          else if (tokStr === "MATERIAL:" && !current.material) current.material = value;
-        }
+      // Try to peel a label prefix from the front of this token
+      const lbl = peelLabel(str);
+      if (lbl) {
+        setField(lbl[0], lbl[1]);
         continue;
       }
-
-      i++;
+      // Unrecognized token: ignore (whitespace-only handled above)
     }
   }
   closeCurrent();
