@@ -384,16 +384,19 @@ export function parseFinishSchedule(allPageText: string): FinishScheduleResult {
   const legendPages: number[] = [];
 
   for (const { pageNum, text } of pages) {
-    const fsCheck = isFinishSchedulePage(text);
+    // v14.10.9: check legend FIRST — schedule detector also matches "ITEM NO."
+    // and "ARCHITECTURAL FINISH" keywords that legend pages have, so without
+    // this ordering legend pages get misclassified as schedule pages.
     const legCheck = isFinishLegendPage(text);
-    if (fsCheck) {
-      schedulePages.push(pageNum);
-      const pageRooms = parseFinishSchedulePage(text, pageNum);
-      rooms.push(...pageRooms);
-    } else if (legCheck) {
+    const fsCheck = !legCheck && isFinishSchedulePage(text);
+    if (legCheck) {
       legendPages.push(pageNum);
       const pageEntries = parseFinishLegendPage(text);
       legend.push(...pageEntries);
+    } else if (fsCheck) {
+      schedulePages.push(pageNum);
+      const pageRooms = parseFinishSchedulePage(text, pageNum);
+      rooms.push(...pageRooms);
     }
   }
 
@@ -720,6 +723,16 @@ function parseColumnEntries(colWords: PdfTextItem[], sourcePage: number): Finish
 }
 
 export function parseFinishLegendPageByCoords(items: PdfTextItem[], pageNum: number, pageHeight: number): FinishLegendEntry[] {
+  // v14.10.9-debug: dump coordinate diagnostics so we can compare browser pdf.js
+  // values against the local pdfplumber fixture that the algorithm was tuned on.
+  if (items.length > 0) {
+    const xs = items.map(it => it.x0).sort((a, b) => a - b);
+    const ys = items.map(it => it.top).sort((a, b) => a - b);
+    const upright_n = items.filter(it => it.upright).length;
+    const sample = items.slice(0, 8).map(it => `{str:"${it.str}",x0:${it.x0.toFixed(1)},top:${it.top.toFixed(1)},upright:${it.upright}}`).join(", ");
+    console.log(`[v14.10.9-debug] page ${pageNum} h=${pageHeight.toFixed(0)} items=${items.length} upright=${upright_n} x0 range=[${xs[0].toFixed(1)},${xs[xs.length-1].toFixed(1)}] top range=[${ys[0].toFixed(1)},${ys[ys.length-1].toFixed(1)}]`);
+    console.log(`[v14.10.9-debug] page ${pageNum} first 8 items: ${sample}`);
+  }
   const cols = clusterColumns(items, pageHeight);
   const entries: FinishLegendEntry[] = [];
   for (const col of cols) {
