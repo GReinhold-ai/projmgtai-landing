@@ -9,7 +9,8 @@ import Head from "next/head";
 import Link from "next/link";
 // v14.9.31: Assembly decomposer — AWI 300 parts explosion
 import { decomposeItems, partsToAOA } from "./assembly-decomposer";
-import { parseFinishSchedule, buildFinishScheduleItems } from "./finish-schedule-parser";
+import { parseFinishSchedule, parseFinishScheduleWithCoords, buildFinishScheduleItems } from "./finish-schedule-parser";
+import type { PdfTextItem, PageItems } from "./finish-schedule-parser";
 
 type Status = "idle" | "reading" | "analyzing" | "extracting" | "building" | "done" | "error";
 
@@ -118,13 +119,15 @@ export default function HomePage() {
     addFiles(Array.from(e.target.files || []));
   };
 
-  async function extractTextFromPdf(pdfFile: File, tag: string = "Plans", globalOffset: number = 0): Promise<{ text: string; pageCount: number; imagePages: Record<number, string> }> {
+  async function extractTextFromPdf(pdfFile: File, tag: string = "Plans", globalOffset: number = 0): Promise<{ text: string; pageCount: number; imagePages: Record<number, string>; pageItems: PageItems[] }> {
     const buf = await pdfFile.arrayBuffer();
     // v14.9.39: Store buffer for later Blob upload
     pdfBuffers.current = [...(pdfBuffers.current || []), { name: pdfFile.name, buffer: buf }];
     const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
     const pages: string[] = [];
     const imagePages: Record<number, string> = {};
+    // v14.10.9: capture per-page coordinate items for legend coord-parsing
+    const pageItems: PageItems[] = [];
     // v14.10.4: tag uppercase + underscore form for the [TAG] marker
     const tagToken = tag.toUpperCase().replace(/\s+/g, "_");
     
@@ -134,6 +137,29 @@ export default function HomePage() {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text = content.items.map((it: any) => it.str).join(" ").trim();
+      // v14.10.9: capture coordinate-tagged items for legend parser
+      try {
+        const viewport = page.getViewport({ scale: 1.0 });
+        const pageHeight = viewport.height;
+        const items: PdfTextItem[] = [];
+        for (const it of content.items as any[]) {
+          if (!it.str || !it.transform) continue;
+          const tr = it.transform as number[];
+          const x0 = tr[4];
+          const width = (it.width as number) || 0;
+          const fontHeight = Math.abs(tr[3]) || 0;
+          const yBaseline = tr[5];
+          // pdf.js uses bottom-left origin; we want top-left origin to match pdfplumber.
+          // top = pageHeight - (yBaseline + fontHeight); bottom = pageHeight - yBaseline.
+          const top = pageHeight - (yBaseline + fontHeight);
+          const bottom = pageHeight - yBaseline;
+          const upright = tr[0] > 0 && tr[3] > 0;
+          items.push({ str: it.str, x0, x1: x0 + width, top, bottom, upright });
+        }
+        pageItems.push({ pageNum: globalPage, pageHeight, items });
+      } catch (coordErr) {
+        console.warn(`[v14.10.9] coord capture failed page ${globalPage}:`, coordErr);
+      }
       // v14.10.4: include [TAG] in page marker so server can stratify if needed
       pages.push(`--- PAGE ${globalPage} [${tagToken}] ---\n${text}`);
       
@@ -160,7 +186,7 @@ export default function HomePage() {
         }
       }
     }
-    return { text: pages.join("\n\n"), pageCount: pdf.numPages, imagePages };
+    return { text: pages.join("\n\n"), pageCount: pdf.numPages, imagePages, pageItems };
   }
 
   const handleExtract = async () => {
@@ -170,7 +196,7 @@ export default function HomePage() {
 
     try {
       // v14.10.4: Read every file, accumulate text with [TAG] page markers and global page numbering
-      const perFile: { name: string; tag: FileTag; text: string; pageCount: number; imagePages: Record<number, string> }[] = [];
+      const perFile: { name: string; tag: FileTag; text: string; pageCount: number; imagePages: Record<number, string>; pageItems: PageItems[] }[] = [];
       let globalOffset = 0;
       const combinedImagePages: Record<number, string> = {};
 
@@ -180,7 +206,7 @@ export default function HomePage() {
         const r = await extractTextFromPdf(tf.file, tf.tag, globalOffset);
         // v14.10.5-debug LOG 1
         console.log(`[v14.10.5-debug] L1 file ${fi + 1}/${files.length} READ: name=${tf.file.name}, tag=${tf.tag}, pageCount=${r.pageCount}, textBytes=${r.text.length}, imagePages=${Object.keys(r.imagePages).length}, globalOffsetBefore=${globalOffset}, globalOffsetAfter=${globalOffset + r.pageCount}`);
-        perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages });
+        perFile.push({ name: tf.file.name, tag: tf.tag, text: r.text, pageCount: r.pageCount, imagePages: r.imagePages, pageItems: r.pageItems });
         // Re-key image pages into the global namespace
         for (const [k, v] of Object.entries(r.imagePages)) combinedImagePages[Number(k)] = v as string;
         globalOffset += r.pageCount;
@@ -254,7 +280,7 @@ export default function HomePage() {
             continue;
           }
           console.log(`[v14.10.7] FS PARSE per-file: ${pf.name} tag=${pf.tag} textBytes=${pf.text.length}`);
-          const fsResult = parseFinishSchedule(pf.text);
+          const fsResult = parseFinishScheduleWithCoords(pf.text, pf.pageItems);
           console.log(`[v14.10.7] FS PARSE result for ${pf.name}: rooms=${fsResult.rooms.length}, schedulePages=${fsResult.schedulePages.length}, legendEntries=${fsResult.legend.length}, schedulePageNums=${JSON.stringify(fsResult.schedulePages)}`);
           if (fsResult.rooms.length > 0) {
             const items = buildFinishScheduleItems(fsResult);
