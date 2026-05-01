@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# v14.10.9 / v14.10.10 patch scripts (working files, not for commit)
+/fix_*.py
+/write_test_*.py
+/dump_legend_*.py
+/inspect_legend.py
+/check_rotation.py
