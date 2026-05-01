@@ -141,22 +141,53 @@ export default function HomePage() {
       try {
         const viewport = page.getViewport({ scale: 1.0 });
         const pageHeight = viewport.height;
+        const pageWidth = viewport.width;
+        const rotate = (page as any).rotate || 0;
+        // v14.10.9c: dump rotation + first 4 raw items so we can decode the
+        // coordinate system. pdf.js getTextContent returns transforms in the
+        // PDF's native (unrotated) space; pages with rotate=90/180/270 need
+        // explicit rotation of x,y to match the visual layout.
+        if (globalPage <= 6) {
+          const sample = (content.items as any[]).slice(0, 4).map((it: any) => {
+            const tr = it.transform || [0,0,0,0,0,0];
+            return `{str:"${(it.str || "").slice(0, 30)}",t=[${tr[0].toFixed(2)},${tr[1].toFixed(2)},${tr[2].toFixed(2)},${tr[3].toFixed(2)},${tr[4].toFixed(1)},${tr[5].toFixed(1)}],w=${(it.width||0).toFixed(1)}}`;
+          }).join(", ");
+          console.log(`[v14.10.9c-raw] page ${globalPage} rotate=${rotate} viewport=${pageWidth.toFixed(0)}x${pageHeight.toFixed(0)} samples: ${sample}`);
+        }
         const items: PdfTextItem[] = [];
         for (const it of content.items as any[]) {
           if (!it.str || !it.transform) continue;
           const tr = it.transform as number[];
-          const x0 = tr[4];
-          const width = (it.width as number) || 0;
-          const fontHeight = Math.abs(tr[3]) || 0;
-          const yBaseline = tr[5];
-          // pdf.js uses bottom-left origin; we want top-left origin to match pdfplumber.
-          // top = pageHeight - (yBaseline + fontHeight); bottom = pageHeight - yBaseline.
-          const top = pageHeight - (yBaseline + fontHeight);
-          const bottom = pageHeight - yBaseline;
-          const upright = tr[0] > 0 && tr[3] > 0;
+          let x0: number, top: number, fontHeight: number, width: number;
+          width = (it.width as number) || 0;
+          fontHeight = Math.abs(tr[3]) || Math.abs(tr[0]) || 10;
+          // Rotate native coords (tr[4]=x, tr[5]=y baseline, bottom-left origin)
+          // into top-left visual coords matching what pdfplumber reports.
+          if (rotate === 90) {
+            // Native (x,y) -> visual (y, pageWidth - x). Width becomes height-equivalent.
+            x0 = tr[5];
+            top = pageWidth - tr[4] - fontHeight;
+          } else if (rotate === 180) {
+            x0 = pageWidth - tr[4] - width;
+            top = tr[5];  // bottom-origin still; convert below
+            top = pageHeight - (top + fontHeight);
+          } else if (rotate === 270) {
+            x0 = pageHeight - tr[5] - fontHeight;
+            top = tr[4];
+          } else {
+            x0 = tr[4];
+            top = pageHeight - (tr[5] + fontHeight);
+          }
+          const bottom = top + fontHeight;
+          // For text rendered with a rotation matrix, abs(transform diagonals) > 0
+          // (just rotated). Test for upright as: not horizontal-flipped, not vertical.
+          // Words running TTB (top-to-bottom) have tr[0]==0 with non-zero tr[1]/tr[2].
+          // Truly upright after page rotation: matrix is identity-ish on the diag.
+          const isVerticalText = Math.abs(tr[0]) < 0.01 && Math.abs(tr[3]) < 0.01;
+          const upright = !isVerticalText;
           items.push({ str: it.str, x0, x1: x0 + width, top, bottom, upright });
         }
-        pageItems.push({ pageNum: globalPage, pageHeight, items });
+        pageItems.push({ pageNum: globalPage, pageHeight: rotate === 90 || rotate === 270 ? pageWidth : pageHeight, items });
       } catch (coordErr) {
         console.warn(`[v14.10.9] coord capture failed page ${globalPage}:`, coordErr);
       }
