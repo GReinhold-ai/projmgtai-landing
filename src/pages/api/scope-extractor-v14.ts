@@ -1285,14 +1285,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const rawRows = decodeToon(toon);
     const result = postprocess(rawRows);
 
-    // v14.10.10-diag: TOON pipeline visibility (REMOVE BEFORE PRODUCTION MERGE)
-    console.log("[v14.10.10-diag] room:", roomName);
-    console.log("[v14.10.10-diag] HEADER_V14:", HEADER_V14);
-    console.log("[v14.10.10-diag] toon (first 1000):", String(toon).slice(0, 1000));
-    console.log("[v14.10.10-diag] rawRows count:", rawRows.length);
-    console.log("[v14.10.10-diag] rawRows[0..2]:", JSON.stringify(rawRows.slice(0, 3), null, 2));
-    console.log("[v14.10.10-diag] result.rows count:", result.rows.length);
-
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
     // v14.8.1: ALWAYS override room to the API-provided roomName.
