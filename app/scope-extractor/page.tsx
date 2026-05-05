@@ -361,7 +361,7 @@ export default function HomePage() {
               roomPages: room.pageNums,
               projectContext: projectContext,
               pageImages: room.pageNums.reduce((acc: Record<number, string>, pn: number) => {
-                if (imagePages[pn]) acc[pn] = imagePages[pn];
+                if (combinedImagePages[pn]) acc[pn] = combinedImagePages[pn];
                 return acc;
               }, {}),
             }),
