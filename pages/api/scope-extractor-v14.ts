@@ -1217,6 +1217,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const t0 = Date.now();
       const pages = parsePages(text);
       const ctx = extractProjectContext(pages);
+      // [v14.10.11-diag-2] Dump server-side page text BEFORE groupPagesByRoom runs.
+      // We need to know what text the server actually received from the client,
+      // so we can compare against pdfplumber ground truth and locate the bug
+      // (client-side pdf.js extraction vs server-side matching).
+      try {
+        const _diagKeywords = ["RECEPTION", "FRONT DESK", "100A", "100B", "100C", "99 SF", "219 SF", "RECEPTION 100"];
+        for (const _diagPage of pages) {
+          const _diagText = _diagPage.text || "";
+          const _diagLen = _diagText.length;
+          const _diagHead = _diagText.substring(0, 500).replace(/\s+/g, " ").trim();
+          const _diagKwHits: Record<string, boolean> = {};
+          for (const _kw of _diagKeywords) {
+            _diagKwHits[_kw] = new RegExp(_kw.replace(/ /g, "\\s+"), "i").test(_diagText);
+          }
+          console.log(`[v14.10.11-diag-2] page=${_diagPage.pageNum} textLen=${_diagLen} kwHits=${JSON.stringify(_diagKwHits)} head=${JSON.stringify(_diagHead)}`);
+        }
+      } catch (e: any) {
+        console.log(`[v14.10.11-diag-2] DUMP FAILED: ${e?.message || String(e)}`);
+      }
       const rooms = groupPagesByRoom(pages);
 
       // Log for debugging
