@@ -362,6 +362,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
             roomMap.get(room)!.push(page.pageNum);
           }
         }
+        console.log(`[v14.10.11-diag] page=${page.pageNum} branch=A multiDetail headings=${JSON.stringify(detailHeadings)} sheetRefs=${JSON.stringify(sheetRefs)} matchedRooms=${JSON.stringify([...matchedRooms])}`);
         continue; // skip single-room assignment
       }
     }
@@ -395,7 +396,20 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
     if (!roomMap.has(bestRoom)) roomMap.set(bestRoom, []);
     roomMap.get(bestRoom)!.push(page.pageNum);
+    // [v14.10.11-diag] Per-page decision dump. titleZoneHead = first 200 chars
+    // of the title zone window we actually scored against. Helps confirm
+    // whether body-text room labels (e.g. "RECEPTION 100" on floor plans,
+    // "100A RECEPTION" on door schedules) reach the matcher at all.
+    const _diagTitleHead = titleZone.substring(0, 200).replace(/\s+/g, " ").trim();
+    const _diagHasReception = /reception/i.test(page.text);
+    const _diagHasReceptionInTitle = /reception/i.test(titleZone);
+    const _diagHasFrontDesk = /front\s*desk/i.test(page.text);
+    console.log(`[v14.10.11-diag] page=${page.pageNum} branch=BC bestRoom="${bestRoom}" bestScore=${bestScore} hasReceptionInPage=${_diagHasReception} hasReceptionInTitleZone=${_diagHasReceptionInTitle} hasFrontDeskInPage=${_diagHasFrontDesk} sheetRefs=${JSON.stringify(sheetRefs)} detailHeadingsCount=${detailHeadings.length} titleZoneHead=${JSON.stringify(_diagTitleHead)}`);
   }
+
+  // [v14.10.11-diag] Final roomMap summary — confirms what the function returns.
+  const _diagSummary = [...roomMap.entries()].map(([name, pgs]) => ({ name, pageCount: pgs.length, pages: pgs }));
+  console.log(`[v14.10.11-diag] FINAL roomMap totalRooms=${roomMap.size} summary=${JSON.stringify(_diagSummary)}`);
 
   const rooms: RoomInfo[] = [];
   let idx = 0;
