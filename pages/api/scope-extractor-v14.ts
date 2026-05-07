@@ -234,6 +234,11 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/Arts?\s*(?:&|and|'?n'?)?\s*Crafts?/i, "Arts & Crafts", 10],
     [/Service\s*Manager/i, "Service Manager", 10],
     [/Reception\s*Desk/i, "Reception Desk", 10],
+    [/\bFront\s*Desk\b/i, "Reception Desk", 10],                  // v14.10.11: alias — "FRONT DESK 219 SF"
+    [/\bRECEPTION\s+\d{3}/, "Reception Desk", 10],                // v14.10.11: floor-plan label "RECEPTION 100"
+    [/\b\d{3}[A-Z]?\s+RECEPTION\b/, "Reception Desk", 10],       // v14.10.11: door-schedule label "100A RECEPTION"
+    [/\bRECEPTION\s+\d+\s*SF\b/, "Reception Desk", 10],         // v14.10.11: room schedule "RECEPTION 99 SF"
+
     [/Team\s*(?:Member|Memb)/i, "Team Members", 10],
     [/Team\s*Room/i, "Team Room", 10],
     [/Men['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Mens Vanity", 10],
@@ -395,6 +400,31 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
     if (!roomMap.has(bestRoom)) roomMap.set(bestRoom, []);
     roomMap.get(bestRoom)!.push(page.pageNum);
+
+    // v14.10.11: Body-text room-label scan. Floor plans and door schedules
+    // place room labels (e.g. "RECEPTION 100", "100A RECEPTION") in the page
+    // body, outside the title zone. These scans run AFTER Branch B/C and ADD
+    // matched rooms — they do not replace bestRoom. A single floor-plan page
+    // can therefore belong to multiple rooms, similar to Branch A's behavior.
+    const _bodyLabelMatches = new Set<string>();
+    const _roomLabelPatterns: [RegExp, string][] = [
+      [/\bRECEPTION\s+\d{3}/, "Reception Desk"],
+      [/\b\d{3}[A-Z]?\s+RECEPTION\b/, "Reception Desk"],
+      [/\bRECEPTION\s+\d+\s*SF\b/, "Reception Desk"],
+      [/\bFRONT\s+DESK\s+\d/, "Reception Desk"],
+    ];
+    for (const [_pat, _name] of _roomLabelPatterns) {
+      if (_pat.test(page.text)) {
+        _bodyLabelMatches.add(_name);
+      }
+    }
+    for (const _room of _bodyLabelMatches) {
+      if (_room === bestRoom) continue;
+      if (!roomMap.has(_room)) roomMap.set(_room, []);
+      if (!roomMap.get(_room)!.includes(page.pageNum)) {
+        roomMap.get(_room)!.push(page.pageNum);
+      }
+    }
   }
 
   const rooms: RoomInfo[] = [];
@@ -1204,6 +1234,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const pages = parsePages(text);
       const ctx = extractProjectContext(pages);
       const rooms = groupPagesByRoom(pages);
+
+      // v14.10.11: Runtime guardrail. If any page text contains reception
+      // labels but groupPagesByRoom produced no Reception Desk room, log a
+      // warning. This catches future regressions immediately rather than
+      // discovering them in customer Excel output six weeks later.
+      const _hasReceptionRoom = rooms.some(r => r.roomName === "Reception Desk");
+      if (!_hasReceptionRoom) {
+        const _pagesWithReceptionLabels = pages
+          .filter(p => /\bRECEPTION\s+\d|\d{3}[A-Z]?\s+RECEPTION\b|\bFront\s*Desk\b/i.test(p.text))
+          .map(p => p.pageNum);
+        if (_pagesWithReceptionLabels.length > 0) {
+          console.log(`[v14.10.11] WARN: pages ${JSON.stringify(_pagesWithReceptionLabels)} contain reception labels but no Reception Desk room was produced`);
+        }
+      }
 
       // Log for debugging
       console.log(`[v14.8.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
