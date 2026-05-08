@@ -234,6 +234,11 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/Arts?\s*(?:&|and|'?n'?)?\s*Crafts?/i, "Arts & Crafts", 10],
     [/Service\s*Manager/i, "Service Manager", 10],
     [/Reception\s*Desk/i, "Reception Desk", 10],
+    [/\bFront\s*Desk\b/i, "Reception Desk", 10],                  // v14.10.11: alias - "FRONT DESK 219 SF"
+    [/\bRECEPTION\s+\d{3}/, "Reception Desk", 10],                // v14.10.11: floor-plan label "RECEPTION 100"
+    [/\b\d{3}[A-Z]?\s+RECEPTION\b/, "Reception Desk", 10],       // v14.10.11: door-schedule label "100A RECEPTION"
+    [/\bRECEPTION\s+\d+\s*SF\b/, "Reception Desk", 10],         // v14.10.11: room schedule "RECEPTION 99 SF"
+
     [/Team\s*(?:Member|Memb)/i, "Team Members", 10],
     [/Team\s*Room/i, "Team Room", 10],
     [/Men['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Mens Vanity", 10],
@@ -1204,6 +1209,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const pages = parsePages(text);
       const ctx = extractProjectContext(pages);
       const rooms = groupPagesByRoom(pages);
+
+      // v14.10.11: Runtime guardrail. If any page text contains reception
+      // labels but groupPagesByRoom produced no Reception Desk room, log a
+      // warning. This catches future regressions immediately rather than
+      // discovering them in customer Excel output six weeks later.
+      const _hasReceptionRoom = rooms.some(r => r.roomName === "Reception Desk");
+      if (!_hasReceptionRoom) {
+        const _pagesWithReceptionLabels = pages
+          .filter(p => /\bRECEPTION\s+\d|\d{3}[A-Z]?\s+RECEPTION\b|\bFront\s*Desk\b/i.test(p.text))
+          .map(p => p.pageNum);
+        if (_pagesWithReceptionLabels.length > 0) {
+          console.log(`[v14.10.11] WARN: pages ${JSON.stringify(_pagesWithReceptionLabels)} contain reception labels but no Reception Desk room was produced`);
+        }
+      }
 
       // Log for debugging
       console.log(`[v14.8.1] Analyze: ${pages.length} pages, ${rooms.length} rooms, ${ctx.materialLegend.length} materials`);
