@@ -175,59 +175,6 @@ export function extractDimensions(text: string): DimHint[] {
     }
   }
 
-    // v14.10.12: Enhanced patterns for finish schedules
-    
-    // Product specification dimensions: "6839 x822", "24 x 36 x 3"
-    const productSpecPattern = /(\d+)\s*[xX×]\s*(\d+)(?:\s*[xX×]\s*(\d+))?/g;
-    let productMatch;
-    while ((productMatch = productSpecPattern.exec(line)) !== null) {
-      const w = parseInt(productMatch[1]);
-      const d = parseInt(productMatch[2]); 
-      const h = productMatch[3] ? parseInt(productMatch[3]) : null;
-      
-      if (w > 0 && w < 10000 && d > 0 && d < 10000) { // Reasonable product dimensions
-        const raw = productMatch[0];
-        const start = Math.max(0, productMatch.index - 40);
-        const end = Math.min(line.length, productMatch.index + productMatch[0].length + 40);
-        
-        // Store primary dimension (width or largest dimension)
-        const primaryDim = Math.max(w, d);
-        hints.push({
-          raw,
-          inches: primaryDim / 25.4, // Convert mm to inches for consistency
-          mm: primaryDim,
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-    
-    // Steel section dimensions: "HSS10x10x12", "W12x35"  
-    const steelSectionPattern = /([A-Z]+)(\d+)[xX](\d+)(?:[xX](\d+))?/g;
-    let steelMatch;
-    while ((steelMatch = steelSectionPattern.exec(line)) !== null) {
-      const type = steelMatch[1]; // HSS, W, etc.
-      const dim1 = parseInt(steelMatch[2]);
-      const dim2 = parseInt(steelMatch[3]);
-      const dim3 = steelMatch[4] ? parseInt(steelMatch[4]) : null;
-      
-      if (dim1 > 0 && dim1 < 100 && dim2 > 0 && dim2 < 100) { // Reasonable steel dimensions (inches)
-        const raw = steelMatch[0];
-        const start = Math.max(0, steelMatch.index - 40);
-        const end = Math.min(line.length, steelMatch.index + steelMatch[0].length + 40);
-        
-        // Steel dimensions are typically in inches
-        const primaryDim = Math.max(dim1, dim2);
-        hints.push({
-          raw,
-          inches: primaryDim,
-          mm: inchesToMm(primaryDim),
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-
   return hints;
 }
 
@@ -286,59 +233,6 @@ export function extractMaterials(text: string): MaterialHint[] {
     }
   }
 
-    // v14.10.12: Enhanced patterns for finish schedules
-    
-    // Product specification dimensions: "6839 x822", "24 x 36 x 3"
-    const productSpecPattern = /(\d+)\s*[xX×]\s*(\d+)(?:\s*[xX×]\s*(\d+))?/g;
-    let productMatch;
-    while ((productMatch = productSpecPattern.exec(line)) !== null) {
-      const w = parseInt(productMatch[1]);
-      const d = parseInt(productMatch[2]); 
-      const h = productMatch[3] ? parseInt(productMatch[3]) : null;
-      
-      if (w > 0 && w < 10000 && d > 0 && d < 10000) { // Reasonable product dimensions
-        const raw = productMatch[0];
-        const start = Math.max(0, productMatch.index - 40);
-        const end = Math.min(line.length, productMatch.index + productMatch[0].length + 40);
-        
-        // Store primary dimension (width or largest dimension)
-        const primaryDim = Math.max(w, d);
-        hints.push({
-          raw,
-          inches: primaryDim / 25.4, // Convert mm to inches for consistency
-          mm: primaryDim,
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-    
-    // Steel section dimensions: "HSS10x10x12", "W12x35"  
-    const steelSectionPattern = /([A-Z]+)(\d+)[xX](\d+)(?:[xX](\d+))?/g;
-    let steelMatch;
-    while ((steelMatch = steelSectionPattern.exec(line)) !== null) {
-      const type = steelMatch[1]; // HSS, W, etc.
-      const dim1 = parseInt(steelMatch[2]);
-      const dim2 = parseInt(steelMatch[3]);
-      const dim3 = steelMatch[4] ? parseInt(steelMatch[4]) : null;
-      
-      if (dim1 > 0 && dim1 < 100 && dim2 > 0 && dim2 < 100) { // Reasonable steel dimensions (inches)
-        const raw = steelMatch[0];
-        const start = Math.max(0, steelMatch.index - 40);
-        const end = Math.min(line.length, steelMatch.index + steelMatch[0].length + 40);
-        
-        // Steel dimensions are typically in inches
-        const primaryDim = Math.max(dim1, dim2);
-        hints.push({
-          raw,
-          inches: primaryDim,
-          mm: inchesToMm(primaryDim),
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-
   return hints;
 }
 
@@ -395,59 +289,6 @@ export function extractHardware(text: string): HardwareHint[] {
     }
   }
 
-    // v14.10.12: Enhanced patterns for finish schedules
-    
-    // Product specification dimensions: "6839 x822", "24 x 36 x 3"
-    const productSpecPattern = /(\d+)\s*[xX×]\s*(\d+)(?:\s*[xX×]\s*(\d+))?/g;
-    let productMatch;
-    while ((productMatch = productSpecPattern.exec(line)) !== null) {
-      const w = parseInt(productMatch[1]);
-      const d = parseInt(productMatch[2]); 
-      const h = productMatch[3] ? parseInt(productMatch[3]) : null;
-      
-      if (w > 0 && w < 10000 && d > 0 && d < 10000) { // Reasonable product dimensions
-        const raw = productMatch[0];
-        const start = Math.max(0, productMatch.index - 40);
-        const end = Math.min(line.length, productMatch.index + productMatch[0].length + 40);
-        
-        // Store primary dimension (width or largest dimension)
-        const primaryDim = Math.max(w, d);
-        hints.push({
-          raw,
-          inches: primaryDim / 25.4, // Convert mm to inches for consistency
-          mm: primaryDim,
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-    
-    // Steel section dimensions: "HSS10x10x12", "W12x35"  
-    const steelSectionPattern = /([A-Z]+)(\d+)[xX](\d+)(?:[xX](\d+))?/g;
-    let steelMatch;
-    while ((steelMatch = steelSectionPattern.exec(line)) !== null) {
-      const type = steelMatch[1]; // HSS, W, etc.
-      const dim1 = parseInt(steelMatch[2]);
-      const dim2 = parseInt(steelMatch[3]);
-      const dim3 = steelMatch[4] ? parseInt(steelMatch[4]) : null;
-      
-      if (dim1 > 0 && dim1 < 100 && dim2 > 0 && dim2 < 100) { // Reasonable steel dimensions (inches)
-        const raw = steelMatch[0];
-        const start = Math.max(0, steelMatch.index - 40);
-        const end = Math.min(line.length, steelMatch.index + steelMatch[0].length + 40);
-        
-        // Steel dimensions are typically in inches
-        const primaryDim = Math.max(dim1, dim2);
-        hints.push({
-          raw,
-          inches: primaryDim,
-          mm: inchesToMm(primaryDim),
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-
   return hints;
 }
 
@@ -487,59 +328,6 @@ export function extractEquipment(text: string): EquipmentHint[] {
       }
     }
   }
-
-    // v14.10.12: Enhanced patterns for finish schedules
-    
-    // Product specification dimensions: "6839 x822", "24 x 36 x 3"
-    const productSpecPattern = /(\d+)\s*[xX×]\s*(\d+)(?:\s*[xX×]\s*(\d+))?/g;
-    let productMatch;
-    while ((productMatch = productSpecPattern.exec(line)) !== null) {
-      const w = parseInt(productMatch[1]);
-      const d = parseInt(productMatch[2]); 
-      const h = productMatch[3] ? parseInt(productMatch[3]) : null;
-      
-      if (w > 0 && w < 10000 && d > 0 && d < 10000) { // Reasonable product dimensions
-        const raw = productMatch[0];
-        const start = Math.max(0, productMatch.index - 40);
-        const end = Math.min(line.length, productMatch.index + productMatch[0].length + 40);
-        
-        // Store primary dimension (width or largest dimension)
-        const primaryDim = Math.max(w, d);
-        hints.push({
-          raw,
-          inches: primaryDim / 25.4, // Convert mm to inches for consistency
-          mm: primaryDim,
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-    
-    // Steel section dimensions: "HSS10x10x12", "W12x35"  
-    const steelSectionPattern = /([A-Z]+)(\d+)[xX](\d+)(?:[xX](\d+))?/g;
-    let steelMatch;
-    while ((steelMatch = steelSectionPattern.exec(line)) !== null) {
-      const type = steelMatch[1]; // HSS, W, etc.
-      const dim1 = parseInt(steelMatch[2]);
-      const dim2 = parseInt(steelMatch[3]);
-      const dim3 = steelMatch[4] ? parseInt(steelMatch[4]) : null;
-      
-      if (dim1 > 0 && dim1 < 100 && dim2 > 0 && dim2 < 100) { // Reasonable steel dimensions (inches)
-        const raw = steelMatch[0];
-        const start = Math.max(0, steelMatch.index - 40);
-        const end = Math.min(line.length, steelMatch.index + steelMatch[0].length + 40);
-        
-        // Steel dimensions are typically in inches
-        const primaryDim = Math.max(dim1, dim2);
-        hints.push({
-          raw,
-          inches: primaryDim,
-          mm: inchesToMm(primaryDim),
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
 
   return hints;
 }
@@ -585,59 +373,6 @@ export function extractDetailRefs(text: string): DetailRef[] {
       }
     }
   }
-
-    // v14.10.12: Enhanced patterns for finish schedules
-    
-    // Product specification dimensions: "6839 x822", "24 x 36 x 3"
-    const productSpecPattern = /(\d+)\s*[xX×]\s*(\d+)(?:\s*[xX×]\s*(\d+))?/g;
-    let productMatch;
-    while ((productMatch = productSpecPattern.exec(line)) !== null) {
-      const w = parseInt(productMatch[1]);
-      const d = parseInt(productMatch[2]); 
-      const h = productMatch[3] ? parseInt(productMatch[3]) : null;
-      
-      if (w > 0 && w < 10000 && d > 0 && d < 10000) { // Reasonable product dimensions
-        const raw = productMatch[0];
-        const start = Math.max(0, productMatch.index - 40);
-        const end = Math.min(line.length, productMatch.index + productMatch[0].length + 40);
-        
-        // Store primary dimension (width or largest dimension)
-        const primaryDim = Math.max(w, d);
-        hints.push({
-          raw,
-          inches: primaryDim / 25.4, // Convert mm to inches for consistency
-          mm: primaryDim,
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
-    
-    // Steel section dimensions: "HSS10x10x12", "W12x35"  
-    const steelSectionPattern = /([A-Z]+)(\d+)[xX](\d+)(?:[xX](\d+))?/g;
-    let steelMatch;
-    while ((steelMatch = steelSectionPattern.exec(line)) !== null) {
-      const type = steelMatch[1]; // HSS, W, etc.
-      const dim1 = parseInt(steelMatch[2]);
-      const dim2 = parseInt(steelMatch[3]);
-      const dim3 = steelMatch[4] ? parseInt(steelMatch[4]) : null;
-      
-      if (dim1 > 0 && dim1 < 100 && dim2 > 0 && dim2 < 100) { // Reasonable steel dimensions (inches)
-        const raw = steelMatch[0];
-        const start = Math.max(0, steelMatch.index - 40);
-        const end = Math.min(line.length, steelMatch.index + steelMatch[0].length + 40);
-        
-        // Steel dimensions are typically in inches
-        const primaryDim = Math.max(dim1, dim2);
-        hints.push({
-          raw,
-          inches: primaryDim,
-          mm: inchesToMm(primaryDim),
-          context: line.slice(start, end).trim(),
-          line: i + 1,
-        });
-      }
-    }
 
   return hints;
 }
