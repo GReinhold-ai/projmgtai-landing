@@ -463,8 +463,14 @@ export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[]
     const prefix = code.split("-")[0];
     if (role === "counter") return "countertop";
     // Millwork role:
-    if (prefix === "RC") return "base_cabinet";    // RC = Residential Cabinet
-    if (prefix === "PL") return "base_cabinet";    // PL = Plastic Laminate cabinet  
+    // v14.10.13: RC and PL prefixes are cabinet *finish specifications*
+    // (Fast Cabinet Doors / Revere / Wilsonart NNNN, etc), not cabinet items
+    // themselves. On Finish Keys PDFs (no shop drawings), synthesizing these
+    // as base_cabinet rows produces dozens of false items in the Cabinet List
+    // tab. Tag as scope_exclusion so the spec data still appears in the Excel
+    // under an honest label.
+    if (prefix === "RC") return "scope_exclusion";
+    if (prefix === "PL") return "scope_exclusion";
     if (prefix === "AF") return "decorative_panel"; // AF = Architectural Finish
     if (prefix === "FM") return "decorative_panel"; // FM = Framed Mirror
     return "decorative_panel";
@@ -495,9 +501,16 @@ export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[]
 
     // Millwork items
     for (const code of r.millwork) {
+      const _it = itemTypeForCode(code, "millwork");
+      // v14.10.13: annotate notes when type was demoted to scope_exclusion
+      // (RC/PL prefixes), so the demotion is greppable in the output Excel.
+      const _baseNotes = r.notes ? `Per finish schedule; notes ${r.notes}` : "Per finish schedule";
+      const _notes = _it === "scope_exclusion"
+        ? `${_baseNotes} [v14.10.13: finish-spec, not item]`
+        : _baseNotes;
       items.push({
         room: roomLabel,
-        item_type: itemTypeForCode(code, "millwork"),
+        item_type: _it,
         description: describeCode(code),
         section_id: "",
         qty: 1,
@@ -506,7 +519,7 @@ export function buildFinishScheduleItems(fs: FinishScheduleResult): ParsedItem[]
         material: legendMap.get(code)?.manufacturer || "",
         sheet_ref: sheetRef,
         confidence: "medium",
-        notes: r.notes ? `Per finish schedule; notes ${r.notes}` : "Per finish schedule",
+        notes: _notes,
         _source: "finish_schedule",
       });
     }

@@ -1366,6 +1366,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    // v14.10.13: Demote misclassified finish-callout rows out of cabinet types.
+    // L950 and L992 inference matches /cabinet/ inside brand names like
+    // "Fast Cabinet Doors", producing false base_cabinet rows from finish
+    // specs on Finish Keys PDFs. Real cabinets have dimensions and sheet refs;
+    // finish callouts don't. If all three guards hold, reclassify.
+    const FINISH_CABINET_TYPES = new Set(["base_cabinet", "upper_cabinet", "tall_cabinet"]);
+    const FINISH_DESC_PATTERN = /^to\s*match\b|^residential\s*cabinet\b|^[A-Z]{1,3}-\d+\s*$|^[A-Z][a-z]+\s*\/\s*[A-Z]/i;
+    for (const row of cleanedRows) {
+      if (!FINISH_CABINET_TYPES.has(row.item_type)) continue;
+      const desc = String(row.description || "").trim();
+      if (!FINISH_DESC_PATTERN.test(desc)) continue;
+      const hasW = row.width_mm && Number(row.width_mm) > 0;
+      const hasD = row.depth_mm && Number(row.depth_mm) > 0;
+      const hasH = row.height_mm && Number(row.height_mm) > 0;
+      const hasSheet = row.sheet_ref && String(row.sheet_ref).trim().length > 0;
+      if (!hasW && !hasD && !hasH && !hasSheet) {
+        row.item_type = "scope_exclusion";
+        row.notes = (String(row.notes || "").trim() + " [v14.10.13: finish-spec, not item]").trim();
+      }
+    }
+
     // v14.8.1: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
