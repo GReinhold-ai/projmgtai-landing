@@ -441,14 +441,32 @@ The FIRST field is ALWAYS item_type (e.g. "base_cabinet", "scope_exclusion").
 The FOURTH field is ALWAYS description (free text).
 NEVER put the room name as item_type. NEVER repeat the room name across multiple fields.
 
-EXAMPLE OUTPUT (for a room called "Reception Desk"):
+EXAMPLE OUTPUT 1 (for a room called "Reception Desk", from a casework details sheet):
   assembly;Reception Desk;1;Reception Desk Assembly;ASSY-001;EA;4420;;;extracted;;;;A8.10;high;
-  base_cabinet;Reception Desk;1;Base Cabinet Section 18A;18A;EA;1359;610;864;extracted;PL-01;Plastic Laminate;;A8.10;high;
   countertop;Reception Desk;1;Solid Surface Countertop;;EA;4420;;32;extracted;SS-1B;Solid Surface;;5/A8.06;high;
   transaction_top;Reception Desk;4;Oval Granite Transaction Top;;EA;914;610;32;extracted;GRANITE;Granite;;A8.10, 7/A8.06;high;
   decorative_panel;Reception Desk;2;3Form Panel Front;;EA;;;;unknown;3FORM;3Form Chroma Vapor;;A8.10;medium;
   rubber_base;Reception Desk;1;Black Rubber Base;;LF;;;;unknown;FB-01;Rubber Base;;;medium;
   scope_exclusion;Reception Desk;1;Printer FA-2 - By Others;;EA;;;;unknown;;;;;low;
+
+NOTE on the Reception Desk example above: The assembly row represents the entire
+reception desk run. Casework details sheets (A8.10 and similar) contain detail
+callouts numbered 1, 2, 3, 4A-D, 5A-D, 8-14, 16-20 in a legend block at the
+bottom of the page. These numbers identify DRAWING VIEWS (plans, elevations,
+sections, reveal details), not cabinet items. Do NOT emit per-section base_cabinet
+rows like "Base Cabinet Section 1A" or "Base Cabinet Section 4A" from drawing-
+index numbers. The Reception Desk example above intentionally has NO per-section
+base_cabinet rows -- the entire desk is captured in the assembly row plus its
+component rows (countertop, transaction_top, decorative_panel, rubber_base).
+
+EXAMPLE OUTPUT 2 (for a room called "Laundry", with explicit furniture-schedule callouts):
+  base_cabinet;Laundry;1;Base Cabinet FURN-31;FURN-31;EA;991;610;864;extracted;PL-01;Plastic Laminate;;A2.41;high;
+  base_cabinet;Laundry;1;Base Cabinet FURN-44;FURN-44;EA;965;610;864;extracted;PL-01;Plastic Laminate;;A2.41;high;
+  base_cabinet;Laundry;1;Base Cabinet FURN-36 with Sink;FURN-36;EA;1829;610;864;extracted;PL-01;Plastic Laminate;;A2.41;high;
+
+The Laundry example shows per-section base_cabinet rows ARE appropriate when
+the page text contains explicit furniture-schedule callouts (FURN-NN), cabinet
+type codes (CL-N), or inline cabinet labels inside elevation annotations.
 
 SCOPE_EXCLUSION vs MILLWORK — CRITICAL:
 - scope_exclusion is ONLY for items NOT built/installed by the millwork contractor
@@ -463,7 +481,18 @@ SCOPE_EXCLUSION vs MILLWORK — CRITICAL:
 ASSEMBLY RULES:
 - If text describes a single built assembly, create parent row with item_type="assembly"
 - Nest components under it with same assembly_id
-- Each cabinet section = separate item with section_id
+- A cabinet 'section' is an EXPLICITLY LABELED cabinet identifier found
+  in the page text, such as: a furniture-schedule callout (FURN-31, FURN-44),
+  a cabinet-type code (CL-1, CL-2), or an inline label inside an elevation's
+  annotations (e.g. "Section 3A" written next to a labeled cabinet box).
+- DO NOT treat drawing-index numbers as cabinet sections. The legend block
+  at the bottom of casework detail sheets lists drawings by number:
+  "1 RECEPTION DESK PLAN", "8 RECEPTION DESK SECTION", "4A FRONT ELEVATION".
+  These numbers describe drawing VIEWS, not cabinet items. Do not emit
+  base_cabinet / upper_cabinet / tall_cabinet rows from them.
+- When a casework page contains drawing-index numbers but NO explicit
+  cabinet section labels in elevations or schedules, emit ONE assembly
+  row describing the whole run, not per-drawing-number cabinet rows.
 
 ITEM TYPES: assembly, base_cabinet, upper_cabinet, tall_cabinet, countertop,
 transaction_top, decorative_panel, trim, channel, rubber_base, substrate, concealed_hinge,
@@ -485,7 +514,7 @@ DIMENSION RULES — CRITICAL:
 DIMENSION ASSIGNMENT (W/D/H):
 - W = WIDTH: the LONG horizontal dimension of the section front face (the run length).
   For a cabinet section measured along the countertop run, this is the face width.
-  Example: section 18A is 4'-5 1/2" wide → W = 1359mm
+  Example: cabinet FURN-36 is 4'-5 1/2" wide → W = 1359mm
 - D = DEPTH: the SHORT horizontal dimension, front-to-back.
   Example: cabinet depth 2'-0" → D = 610mm
 - H = HEIGHT: the vertical dimension.
@@ -495,7 +524,13 @@ DIMENSION ASSIGNMENT (W/D/H):
 - DO NOT put depth in the width column. If the only dimension you see is depth, put it in D.
 
 RECEPTION DESK / SERVICE COUNTERS:
-- Capture each side/run as groups of cabinet sections
+- Capture each side/run as a single assembly row by default.
+- Only emit per-section cabinet rows when the page text contains explicit
+  cabinet section labels (furniture-schedule callouts like FURN-NN, type
+  codes like CL-N, or inline elevation labels like "Section 3A"). When
+  the only section signals are drawing-index numbers from the legend
+  block (e.g. "1 RECEPTION DESK PLAN", "4A FRONT ELEVATION"), emit only
+  the assembly row, not per-section rows.
 - Transaction tops (raised customer-facing surfaces, often oval or shaped granite/stone) 
   should be separate rows with item_type="transaction_top"
 - If the material is called "solid surface" (like Corian) use material_code SS-xx
