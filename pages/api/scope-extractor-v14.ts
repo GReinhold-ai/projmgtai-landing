@@ -225,7 +225,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     if (hasMill) millworkCount++;
     if (hasSpec && !hasMill) specCount++;
   }
-  console.log(`[v14.8.1] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
+  console.log(`[v14.10.15] Page stats: ${pages.length} total, ${millworkCount} with millwork signals, ${specCount} spec-only`);
 
   // Room patterns with specificity scores (higher = more specific = wins ties)
   const titlePatterns: [RegExp, string, number][] = [
@@ -276,24 +276,33 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/Pantry/i, "Pantry", 10],
     [/Butler/i, "Butler Pantry", 10],
 
-    // Medium specificity (score 5)
-    [/\bLocker/i, "Team Members", 5],
-    [/\bVanit(?:y|ies)\b/i, "Vanity Details", 5],
-    [/\bTrellis\b/i, "Retail Trellis", 5],
-    [/\bRetail\b/i, "Retail Trellis", 5],
+    // v14.10.15: Score-5 label neutralization per F1 / standing rule 36.
+    // Source: May 15 addendum sec 8.5; May 16 Design Process doc Part III F1 + rule 36.
+    // Patterns retained so real scope still gets matched. Labels neutralized to
+    // "Unclassified" so the LLM sees the page contents without being forced into
+    // a 24HF-canonical tab name. The v14.11.1a fix (extracted-room-number
+    // preference) will replace these patterns with real-name extraction.
+    // Exceptions: Lobby, Lounge, Bar, Fireplace, Wine Display, Banquet Room are
+    // generic descriptive labels (not 24HF-canonical) and are kept as-is.
+    // Note: Pantry score-10 pattern at line ~273 still leaks until v14.11.1a;
+    // this commit only neutralizes the score-5 path.
+    [/\bLocker/i, "Unclassified", 5],
+    [/\bVanit(?:y|ies)\b/i, "Unclassified", 5],
+    [/\bTrellis\b/i, "Unclassified", 5],
+    [/\bRetail\b/i, "Unclassified", 5],
     [/\bLobby\b/i, "Lobby", 5],
-    [/\bKitchen\b/i, "Kitchen", 5],
-    [/\bMirror/i, "Vanity Details", 5],
-    [/\bUnisex\b/i, "Unisex", 5],
-    [/\bPool\b/i, "Pool Area", 5],
-    [/\bFitness\b/i, "Fitness Area", 5],
-    [/\bStereo\b/i, "Service Manager", 5],
-    [/\bAV\s*Equip/i, "Service Manager", 5],
+    [/\bKitchen\b/i, "Unclassified", 5],
+    [/\bMirror/i, "Unclassified", 5],
+    [/\bUnisex\b/i, "Unclassified", 5],
+    [/\bPool\b/i, "Unclassified", 5],
+    [/\bFitness\b/i, "Unclassified", 5],
+    [/\bStereo\b/i, "Unclassified", 5],
+    [/\bAV\s*Equip/i, "Unclassified", 5],
     [/\bLounge\b/i, "Lounge", 5],
     [/\bBar\b(?!\s*(?:code|chart))/i, "Bar", 5],
     [/\bFireplace\b/i, "Fireplace", 5],
     [/\bWine\b/i, "Wine Display", 5],
-    [/\bPantry\b/i, "Pantry", 5],
+    [/\bPantry\b/i, "Unclassified", 5],
     [/\bBanquet\b/i, "Banquet Room", 5],
   ];
 
@@ -415,7 +424,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
 
 function buildSystemPrompt(ctx: ProjectContext): string {
   let p = `
-You are ScopeExtractor v14.8.1, an expert architectural millwork estimator
+You are ScopeExtractor v14.10.15, an expert architectural millwork estimator
 with 40 years of experience reading construction documents for a
 C-6 licensed millwork subcontractor.
 
