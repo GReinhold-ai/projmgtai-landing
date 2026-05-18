@@ -1,6 +1,6 @@
-﻿// middleware.ts
+﻿// proxy.ts (Next.js 16 - formerly middleware.ts; renamed per v16 deprecation)
 //
-// Next.js Edge Middleware. Runs before any API route or page.
+// Next.js Proxy. Runs before any API route or page.
 // Currently gates only /api/extract-and-export (the LLM-cost-bearing route).
 //
 // Other routes are unaffected. Auth pages, healthchecks, static assets
@@ -16,7 +16,7 @@ export const config = {
   matcher: ["/api/extract-and-export"],
 };
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   // Vercel sets x-forwarded-for; fall back to a constant if missing
   // so dev/local doesn't error. In production this header is always set.
   const ip =
