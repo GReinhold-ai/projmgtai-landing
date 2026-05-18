@@ -45,3 +45,4 @@ next-env.d.ts
 /dump_legend_*.py
 /inspect_legend.py
 /check_rotation.py
+.env*.local
