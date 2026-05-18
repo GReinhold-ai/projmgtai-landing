@@ -13,7 +13,7 @@ import type { NextRequest } from "next/server";
 import { checkRateLimit } from "./lib/rate-limit";
 
 export const config = {
-  matcher: ["/api/extract-and-export"],
+  matcher: ["/api/scope-extractor-v14"],
 };
 
 export async function proxy(req: NextRequest) {
