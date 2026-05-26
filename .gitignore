@@ -46,3 +46,11 @@ next-env.d.ts
 /inspect_legend.py
 /check_rotation.py
 .env*.local
+
+# Sentry Config File
+.env.sentry-build-plugin
+
+# Underscore-prefix patch/working scripts (not for commit)
+_patch_*.py
+_script_*.py
+_temp_*.py
