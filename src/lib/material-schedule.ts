@@ -12,12 +12,15 @@
 // Why Haiku, not the coordinate parser in app/scope-extractor/
 // finish-schedule-parser.ts: the route works on text, and Haiku handles the
 // multi-column / messy legends that defeat the text-only regex - without the
-// client-side pdf.js coordinate plumbing the coord parser needs. The coord
-// parser remains the future deterministic upgrade once coordinates are wired.
+// client-side pdf.js coordinate plumbing the coord parser needs.
 //
 // Output contract: TOON (project standard), decoded via decodeToon.
 // Honest absence: returns [] on no-legend or any failure - never throws,
 // never synthesizes codes.
+//
+// v14.x-r2: expanded prefix-category map (RF/CA/VF/WT/BT/FT/TS/TR/SN/AC/3FORM)
+//           so finish codes stop landing as "unknown"; field sanitization so a
+//           stray ";" in source spec text can no longer bleed across columns.
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { decodeToon, isValidToon } from "@/lib/toon";
@@ -40,56 +43,89 @@ export interface MaterialLegendEntry {
 const TOON_HEADER = `#TOON v=1 sep=; cols=${MW_MATERIAL_SCHEMA.join(",")}`;
 
 // Known finish/material code prefixes - union of the v14.9.31 material-legend
-// regex and the finish-schedule-parser catalog. Used to (a) validate that a
-// row's code is a real code and (b) derive a reliable category server-side
-// rather than trusting the model's category guess.
+// regex, the finish-schedule-parser catalog, and the prefixes observed in the
+// 24HF MillworkSet legend. Used to (a) validate that a row's code is a real
+// code and (b) derive a reliable category server-side rather than trusting the
+// model's guess.
 const PREFIX_CATEGORY: Record<string, string> = {
+  // Casework / millwork surfaces
   PL: "laminate",
   SS: "solid_surface",
   QZ: "quartz",
   GR: "granite",
+  COR: "corian",
   WD: "wood",
   GL: "glass",
   MEL: "melamine",
   ST: "stainless",
   FB: "blocking",
   "3F": "specialty",
+  "3FORM": "resin_panel",
   AF: "architectural_finish",
   RC: "cabinet_finish",
   FM: "framed_mirror",
   MR: "mirror",
+  // Wall finishes
   WC: "wall_covering",
-  CT: "ceramic_tile",
   PT: "paint",
-  LVP: "flooring",
+  // Tile
+  CT: "ceramic_tile",
+  WT: "wall_tile",
+  BT: "base_tile",
+  FT: "floor_tile",
+  TS: "stone_tile",
+  TR: "trim_tile",
+  // Flooring
+  LVP: "luxury_vinyl_plank",
+  VCT: "vinyl_composition_tile",
+  VF: "resilient_flooring",
+  RF: "resilient_flooring",
+  CA: "carpet",
   CPT: "carpet",
-  VCT: "flooring",
-  STA: "stain",
-  COR: "corian",
   LN: "linoleum",
+  STA: "stain",
+  // Base / transitions / ceilings
   RB: "rubber_base",
   VB: "vinyl_base",
+  SN: "transition_strip",
+  AC: "acoustic_ceiling",
 };
 
 // A code looks like PREFIX-digits(+optional letter): PL-01, SS-1B, AF-3, QZ-1,
-// 3F-1; or a known bare code. Prose fragments ("SS THAN 6") fail this test.
-const CODE_RE = /^([A-Z0-9]{1,4})-?\d+[A-Z]?$|^(EPOXY|FRP|SC)$/;
+// 3F-1, 3FORM-VAPOR; or a known bare code. Prose fragments ("SS THAN 6") fail.
+const CODE_RE = /^([A-Z0-9]{1,5})-?\d*[A-Z]*$/;
+const BARE_OK = new Set(["EPOXY", "FRP", "SC"]);
+
+// Strip anything that would corrupt a TOON field: the separator itself, stray
+// newlines, doubled separators, and trailing punctuation/whitespace. Defends
+// column alignment even if the model leaks a ";" from source spec text.
+function clean(v: unknown): string {
+  return (v === null || v === undefined ? "" : String(v))
+    .replace(/[\r\n]+/g, " ")
+    .replace(/;+/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/[;,\s]+$/g, "")
+    .trim();
+}
+
+function isCode(code: string): boolean {
+  const c = code.trim().toUpperCase();
+  if (BARE_OK.has(c)) return true;
+  return CODE_RE.test(c) && /\d/.test(c); // must contain a digit (rejects "SS"/"ST" alone)
+}
 
 function categoryFor(code: string, modelGuess: string): string {
   const c = code.trim().toUpperCase();
   const prefix = c.includes("-") ? c.split("-")[0] : c.replace(/\d.*$/, "");
   const known = PREFIX_CATEGORY[prefix];
   if (known) return known;
-  const g = (modelGuess || "").trim();
+  const g = clean(modelGuess);
   return g && g.toLowerCase() !== "unknown" ? g : "unknown";
 }
 
 function isPlausibleEntry(e: MaterialLegendEntry): boolean {
-  if (!e.code || !CODE_RE.test(e.code.trim().toUpperCase())) return false;
-  // Reject rows with no product info at all. The prose-fragment failure mode
-  // (BHH "SS THAN 6 LENGTHS") is caught by CODE_RE above, since the "code"
-  // field would not match. Belt-and-suspenders.
-  if (!(e.manufacturer || "").trim() && !(e.productName || "").trim()) return false;
+  if (!e.code || !isCode(e.code)) return false;
+  if (!e.manufacturer && !e.productName) return false;
   return true;
 }
 
@@ -97,7 +133,7 @@ const SYSTEM_PROMPT = `You extract the MATERIAL / FINISH LEGEND from an architec
 
 The legend (a.k.a. material schedule, finish material selections, finish legend)
 maps short codes to actual products. Codes look like: PL-1, SS-1, SS-2, QZ-1,
-RC-1, RC-3, AF-3, AF-6, WD-1, STA-1, MEL-1, 3F-1. The prefix varies by project.
+RC-1, RC-3, AF-3, AF-6, WD-1, STA-1, MEL-1, 3F-1, WT-1A, BT-4B. The prefix varies.
 
 For EACH code paired with an explicit product definition in a legend or schedule
 block, output one row with these columns, in this order:
@@ -115,6 +151,11 @@ RULES:
   "ST AND STRIP JOINTS" are sentence fragments, NOT codes - skip them.
 - DO NOT invent or infer codes. If the document contains no legend, output ONLY
   the header line with zero data rows.
+- CRITICAL: each field is ONE line and must NOT contain a semicolon (";") - the
+  semicolon is the column separator. If the source spec text contains semicolons
+  or line breaks inside a value, replace them with commas or spaces so every row
+  has exactly five fields. Keep long tile/finish specs in the single productName
+  field rather than spilling across columns.
 
 OUTPUT - TOON only, no prose, no markdown fences. First line is the header:
 ${TOON_HEADER}
@@ -161,13 +202,13 @@ export async function extractMaterialLegend(
 
     const entries: MaterialLegendEntry[] = [];
     for (const r of rows) {
-      const code = (r.code || "").trim();
+      const code = clean(r.code);
       const entry: MaterialLegendEntry = {
         code,
-        manufacturer: (r.manufacturer || "").trim(),
-        productName: (r.productName || "").trim(),
-        catalogNumber: (r.catalogNumber || "").trim(),
-        category: categoryFor(code, (r.category || "").trim()),
+        manufacturer: clean(r.manufacturer),
+        productName: clean(r.productName),
+        catalogNumber: clean(r.catalogNumber),
+        category: categoryFor(code, r.category),
       };
       if (isPlausibleEntry(entry)) entries.push(entry);
     }
