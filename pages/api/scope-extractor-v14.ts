@@ -33,6 +33,7 @@ import { decodeToon, isValidToon } from "@/lib/toon";
 import { MW_ITEM_SCHEMA_V14 } from "@/lib/toonSchemas";
 import { preprocess } from "@/lib/parser/preprocess";
 import { postprocess } from "@/lib/parser/postprocess";
+import { extractMaterialLegend } from "@/lib/material-schedule";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = "claude-sonnet-4-20250514";
@@ -86,7 +87,7 @@ function parsePages(text: string): PageText[] {
 
 // ─── Project Context Extraction ──────────────────────────────
 
-function extractProjectContext(pages: PageText[]): ProjectContext {
+async function extractProjectContext(pages: PageText[]): Promise<ProjectContext> {
   const allText = pages.map(p => p.text).join("\n");
   const context: ProjectContext = {
     materialLegend: [], hardwareGroups: {}, generalNotes: [],
@@ -151,43 +152,8 @@ function extractProjectContext(pages: PageText[]): ProjectContext {
     context.documentType = "bid_set";
   }
 
-  // Material legend extraction — broader patterns
-  // Look for "Finish Material Selections" OR "MATERIAL LEGEND" OR "FINISH SCHEDULE"
-  const legendPatterns = [
-    /Finish\s*Material\s*Selections[;:\s]*([\s\S]*?)(?=\n\n|\d+\s+\d+\s+\d+|---|$)/i,
-    /MATERIAL\s*LEGEND[;:\s]*([\s\S]*?)(?=\n\n|---|$)/i,
-    /FINISH\s*SCHEDULE[;:\s]*([\s\S]*?)(?=\n\n|---|$)/i,
-  ];
-  
-  for (const pat of legendPatterns) {
-    const legendBlock = allText.match(pat);
-    if (legendBlock) {
-      // Match patterns like: PL-01: Wilsonart "Solar Oak" 7816-60
-      // or PL-01; Wilsonart 'Solar Oak' 7816-60
-      // or PL01 Wilsonart "Solar Oak" 7816
-      const entryRe = /((?:PL|SS|FB|3F|WD|GL|RB|MEL|ALM|WC|ST|MR|QZ|GR|COR|LN)-?\d*[A-Z]?)\s*[;:=\s]\s*(\w[\w\s&.]*?)\s*['''"""]([^'''""\n]+)['''"""]?\s*(\S+)?/gi;
-      let m;
-      while ((m = entryRe.exec(legendBlock[1])) !== null) {
-        let category = "unknown";
-        const code = m[1].trim();
-        if (/^PL/i.test(code)) category = "laminate";
-        else if (/^SS/i.test(code)) category = "solid_surface";
-        else if (/^3F/i.test(code)) category = "specialty";
-        else if (/^FB/i.test(code)) category = "blocking";
-        else if (/^MEL/i.test(code)) category = "melamine";
-        else if (/^ST/i.test(code)) category = "stainless";
-        else if (/^QZ/i.test(code)) category = "quartz";
-        else if (/^GR/i.test(code)) category = "granite";
-        else if (/^WD/i.test(code)) category = "wood";
-        else if (/^GL/i.test(code)) category = "glass";
-        context.materialLegend.push({
-          code, manufacturer: m[2].trim(), productName: m[3].trim(),
-          catalogNumber: (m[4] || "").trim(), category,
-        });
-      }
-      if (context.materialLegend.length > 0) break; // found entries, stop
-    }
-  }
+  // Material legend extraction (D1): Haiku-based; honest absence -> [].
+  context.materialLegend = await extractMaterialLegend(allText, anthropic);
 
   // Hardware group extraction
   const hwGroupRe = /Group\s+(\d+)\s+Hardware[:\s]*([\s\S]*?)(?=Group\s+\d|$)/gi;
@@ -1251,7 +1217,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (mode === "analyze") {
       const t0 = Date.now();
       const pages = parsePages(text);
-      const ctx = extractProjectContext(pages);
+      const ctx = await extractProjectContext(pages);
       const rooms = groupPagesByRoom(pages);
 
       // v14.10.11: Runtime guardrail. If any page text contains reception
@@ -1306,7 +1272,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log(`[v14.8.1] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
-    const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
+    const ctx: ProjectContext = clientCtx || await extractProjectContext(pages);
     const hints = preprocess(combinedText, sheetRef);
 
     const systemPrompt = buildSystemPrompt(ctx);

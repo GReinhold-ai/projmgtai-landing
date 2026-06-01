@@ -187,3 +187,17 @@ export const REWMO_TIER_SNAPSHOT_SCHEMA: ToonSchema = [
   "locked_until",
   "notes"
 ];
+
+
+/**
+ * Material / Finish legend entries (code -> product). Consumed by
+ * scope-extractor-v14.ts (ctx.materialLegend) for prompt injection and
+ * assignMaterialCodes resolution. Added D1 (Haiku legend extractor).
+ */
+export const MW_MATERIAL_SCHEMA: ToonSchema = [
+  "code",
+  "manufacturer",
+  "productName",
+  "catalogNumber",
+  "category",
+];
