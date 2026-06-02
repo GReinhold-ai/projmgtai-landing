@@ -89,6 +89,9 @@ const PREFIX_CATEGORY: Record<string, string> = {
   VB: "vinyl_base",
   SN: "transition_strip",
   AC: "acoustic_ceiling",
+  MT: "metal",
+  PA: "paint",
+  SC: "sealed_concrete",
 };
 
 // A code looks like PREFIX-digits(+optional letter): PL-01, SS-1B, AF-3, QZ-1,

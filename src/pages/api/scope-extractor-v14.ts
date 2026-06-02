@@ -1428,7 +1428,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const GENERIC = new Set(["", "plastic laminate", "laminate", "solid surface",
         "plywood", "plywood substrate", "substrate", "wood", "melamine",
         "white melamine", "glass", "granite", "quartz", "stainless",
-        "rubber base", "vinyl base"]);
+        "rubber base", "vinyl base", "unknown", "extracted", "calculated", "from_schedule", "n/a", "tbd"]);
       const fillMaterial = (row: any, hit: { code: string; name: string }) => {
         if (!hit.name || hit.name === hit.code) return;
         const cur = String(row.material || "").trim();
@@ -1450,8 +1450,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const mcField = String(row.material_code || "").trim();
 
         // Material field holds the code, material_code holds junk/bare prefix: swap.
-        const matFieldCode = matField.match(/^(PL-\d+[A-Z]?|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM)$/i);
-        if (matFieldCode && (!mcField || mcField.length <= 3)) {
+        const matFieldCode = matField.match(/^(PL-\d+[A-Z]?|SS-\d+[A-Z]?|WC-\d+[A-Z]?|WD-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM)$/i);
+        if (matFieldCode && (!mcField || mcField.length <= 3 || !resolveLegend(mcField))) {
           const canon = normCode(matFieldCode[1]);
           row.material_code = canon;
           row.material = "";
@@ -1485,7 +1485,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
         if (found) continue;
 
-        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE)\b/i);
+        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|WD-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE)\b/i);
         if (codeMatch) {
           const canon = normCode(codeMatch[1]);
           row.material_code = canon;
