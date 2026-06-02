@@ -33,6 +33,7 @@ import { decodeToon, isValidToon } from "@/lib/toon";
 import { MW_ITEM_SCHEMA_V14 } from "@/lib/toonSchemas";
 import { preprocess } from "@/lib/parser/preprocess";
 import { postprocess } from "@/lib/parser/postprocess";
+import { extractMaterialLegend } from "@/lib/material-schedule";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = "claude-sonnet-4-20250514";
@@ -86,7 +87,7 @@ function parsePages(text: string): PageText[] {
 
 // ─── Project Context Extraction ──────────────────────────────
 
-function extractProjectContext(pages: PageText[]): ProjectContext {
+async function extractProjectContext(pages: PageText[]): Promise<ProjectContext> {
   const allText = pages.map(p => p.text).join("\n");
   const context: ProjectContext = {
     materialLegend: [], hardwareGroups: {}, generalNotes: [],
@@ -151,43 +152,8 @@ function extractProjectContext(pages: PageText[]): ProjectContext {
     context.documentType = "bid_set";
   }
 
-  // Material legend extraction — broader patterns
-  // Look for "Finish Material Selections" OR "MATERIAL LEGEND" OR "FINISH SCHEDULE"
-  const legendPatterns = [
-    /Finish\s*Material\s*Selections[;:\s]*([\s\S]*?)(?=\n\n|\d+\s+\d+\s+\d+|---|$)/i,
-    /MATERIAL\s*LEGEND[;:\s]*([\s\S]*?)(?=\n\n|---|$)/i,
-    /FINISH\s*SCHEDULE[;:\s]*([\s\S]*?)(?=\n\n|---|$)/i,
-  ];
-  
-  for (const pat of legendPatterns) {
-    const legendBlock = allText.match(pat);
-    if (legendBlock) {
-      // Match patterns like: PL-01: Wilsonart "Solar Oak" 7816-60
-      // or PL-01; Wilsonart 'Solar Oak' 7816-60
-      // or PL01 Wilsonart "Solar Oak" 7816
-      const entryRe = /((?:PL|SS|FB|3F|WD|GL|RB|MEL|ALM|WC|ST|MR|QZ|GR|COR|LN)-?\d*[A-Z]?)\s*[;:=\s]\s*(\w[\w\s&.]*?)\s*['''"""]([^'''""\n]+)['''"""]?\s*(\S+)?/gi;
-      let m;
-      while ((m = entryRe.exec(legendBlock[1])) !== null) {
-        let category = "unknown";
-        const code = m[1].trim();
-        if (/^PL/i.test(code)) category = "laminate";
-        else if (/^SS/i.test(code)) category = "solid_surface";
-        else if (/^3F/i.test(code)) category = "specialty";
-        else if (/^FB/i.test(code)) category = "blocking";
-        else if (/^MEL/i.test(code)) category = "melamine";
-        else if (/^ST/i.test(code)) category = "stainless";
-        else if (/^QZ/i.test(code)) category = "quartz";
-        else if (/^GR/i.test(code)) category = "granite";
-        else if (/^WD/i.test(code)) category = "wood";
-        else if (/^GL/i.test(code)) category = "glass";
-        context.materialLegend.push({
-          code, manufacturer: m[2].trim(), productName: m[3].trim(),
-          catalogNumber: (m[4] || "").trim(), category,
-        });
-      }
-      if (context.materialLegend.length > 0) break; // found entries, stop
-    }
-  }
+  // Material legend extraction (D1): Haiku-based; honest absence -> [].
+  context.materialLegend = await extractMaterialLegend(allText, anthropic);
 
   // Hardware group extraction
   const hwGroupRe = /Group\s+(\d+)\s+Hardware[:\s]*([\s\S]*?)(?=Group\s+\d|$)/gi;
@@ -1251,7 +1217,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (mode === "analyze") {
       const t0 = Date.now();
       const pages = parsePages(text);
-      const ctx = extractProjectContext(pages);
+      const ctx = await extractProjectContext(pages);
       const rooms = groupPagesByRoom(pages);
 
       // v14.10.11: Runtime guardrail. If any page text contains reception
@@ -1306,7 +1272,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log(`[v14.8.1] Sheet: ${sheetInfo.sheetNumber}, Details: ${sheetInfo.detailNumbers.join(", ")}`);
     }
 
-    const ctx: ProjectContext = clientCtx || extractProjectContext(pages);
+    const ctx: ProjectContext = clientCtx || await extractProjectContext(pages);
     const hints = preprocess(combinedText, sheetRef);
 
     const systemPrompt = buildSystemPrompt(ctx);
@@ -1434,66 +1400,109 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // v14.8.1: Postprocess material code assignment from hints (with error safety)
     try {
     const assignMaterialCodes = (rows: any[], matHints: any[], legend: any[]) => {
-      if (!matHints || !legend || !rows) return;
+      if (!rows) return;
+      // Build code map from hints first, then legend (legend wins).
       const codeMap: Record<string, { code: string; name: string; category: string }> = {};
       for (const m of (matHints || [])) {
         if (m?.code) codeMap[m.code] = { code: m.code, name: m.fullName || m.code, category: m.category || "" };
       }
       for (const l of (legend || [])) {
-        if (l?.code) codeMap[l.code] = { code: l.code, name: l.productName || l.code, category: l.category || "" };
+        if (l?.code) {
+          const product = [l.manufacturer, l.productName]
+            .map((s: any) => String(s || "").trim()).filter(Boolean).join(" ");
+          codeMap[l.code] = { code: l.code, name: product || l.code, category: l.category || "" };
+        }
       }
+      // Normalized index: uppercase + strip leading zeros (PL-01 -> PL-1) so row
+      // codes match legend keys regardless of zero-padding.
+      const normCode = (s: any) =>
+        String(s || "").trim().toUpperCase().replace(/^([A-Z0-9]+)-0*(\d)/, "$1-$2");
+      const normIndex: Record<string, { code: string; name: string; category: string }> = {};
+      for (const k of Object.keys(codeMap)) {
+        const nk = normCode(k);
+        normIndex[nk] = { code: nk, name: codeMap[k].name, category: codeMap[k].category };
+      }
+      const resolveLegend = (code: string) => normIndex[normCode(code)] || null;
+      // Override material text only when empty, echoing the code, or a bare
+      // generic type word - never clobber richer text the extractor found.
+      const GENERIC = new Set(["", "plastic laminate", "laminate", "solid surface",
+        "plywood", "plywood substrate", "substrate", "wood", "melamine",
+        "white melamine", "glass", "granite", "quartz", "stainless",
+        "rubber base", "vinyl base", "unknown", "extracted", "calculated", "from_schedule", "n/a", "tbd"]);
+      const fillMaterial = (row: any, hit: { code: string; name: string }) => {
+        if (!hit.name || hit.name === hit.code) return;
+        const cur = String(row.material || "").trim();
+        if (!cur || normCode(cur) === hit.code || cur.toUpperCase() === hit.code || GENERIC.has(cur.toLowerCase())) {
+          row.material = hit.name;
+        }
+      };
 
-      const plCodes = Object.keys(codeMap).filter(c => /^PL-/i.test(c));
-      const ssCodes = Object.keys(codeMap).filter(c => /^SS-/i.test(c));
-      const wcCodes = Object.keys(codeMap).filter(c => /^WC-/i.test(c));
-      const fbCodes = Object.keys(codeMap).filter(c => /^FB-/i.test(c));
+      const plCodes = Object.keys(normIndex).filter(c => /^PL-/i.test(c));
+      const ssCodes = Object.keys(normIndex).filter(c => /^SS-/i.test(c));
+      const wcCodes = Object.keys(normIndex).filter(c => /^WC-/i.test(c));
+      const fbCodes = Object.keys(normIndex).filter(c => /^FB-/i.test(c));
 
       for (const row of rows) {
         try {
         if (!row || row.item_type === "scope_exclusion" || row.item_type === "assembly") continue;
-        
-        // Pre-scan: if material field has a code pattern and material_code doesn't, swap
+
         const matField = String(row.material || "").trim();
         const mcField = String(row.material_code || "").trim();
-        const matFieldCode = matField.match(/^(PL-\d+[A-Z]?|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM)$/i);
-        if (matFieldCode && (!mcField || mcField.length <= 3)) {
-          // Material field has the code, material_code has junk or a bare prefix
-          row.material_code = matFieldCode[1].toUpperCase();
-          row.material = mcField || ""; // swap the bare prefix to material or clear
+
+        // Material field holds the code, material_code holds junk/bare prefix: swap.
+        const matFieldCode = matField.match(/^(PL-\d+[A-Z]?|SS-\d+[A-Z]?|WC-\d+[A-Z]?|WD-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM)$/i);
+        if (matFieldCode && (!mcField || mcField.length <= 3 || !resolveLegend(mcField))) {
+          const canon = normCode(matFieldCode[1]);
+          row.material_code = canon;
+          row.material = "";
+          const hit = resolveLegend(canon);
+          if (hit) fillMaterial(row, hit);
           continue;
         }
-        
+
         const matCode = mcField;
-        // Skip if already has a real-looking material code (4+ chars, pattern match)
         const looksLikeCode = matCode.length >= 3 && matCode.length <= 15 && /^[A-Z0-9][-A-Z0-9_]*$/i.test(matCode) && !VALID_ITEM_TYPES.has(matCode);
-        if (looksLikeCode) continue;
-        // Clear garbage in material_code (item_type names, long descriptions, bare prefixes like "SS")
+        if (looksLikeCode) {
+          // FIX: resolve instead of skipping - this is what left rows at None/echo.
+          const hit = resolveLegend(matCode);
+          if (hit) { row.material_code = hit.code; fillMaterial(row, hit); }
+          else { row.material_code = normCode(matCode); }
+          continue;
+        }
+        // Clear garbage in material_code (item_type names, long descriptions, bare prefixes).
         if (matCode) row.material_code = "";
 
         const combined = `${String(row.description||"")} ${String(row.material||"")} ${String(row.notes||"")}`.toUpperCase();
-
         let found = false;
         for (const code of Object.keys(codeMap)) {
           if (combined.includes(code.toUpperCase())) {
-            row.material_code = code;
-            if (!row.material) row.material = codeMap[code].name;
+            const hit = resolveLegend(code);
+            row.material_code = hit ? hit.code : normCode(code);
+            if (hit) fillMaterial(row, hit);
+            else if (!row.material) row.material = codeMap[code].name;
             found = true; break;
           }
         }
         if (found) continue;
 
-        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE)\b/i);
-        if (codeMatch) { row.material_code = codeMatch[1].toUpperCase(); continue; }
+        const codeMatch = combined.match(/\b(PL-\d+|SS-\d+[A-Z]?|WC-\d+[A-Z]?|WD-\d+[A-Z]?|FB-\d+|MEL-\w+|3FORM|GRANITE|STONE)\b/i);
+        if (codeMatch) {
+          const canon = normCode(codeMatch[1]);
+          row.material_code = canon;
+          const hit = resolveLegend(canon);
+          if (hit) fillMaterial(row, hit);
+          continue;
+        }
 
         const t = row.item_type || "";
         if (/base_cabinet|upper_cabinet|tall_cabinet|cpu_shelf|fixed_shelf|adjustable_shelf|drawer|file_drawer|trash_drawer|safe_cabinet/.test(t)) {
-          if (plCodes.length) { row.material_code = plCodes[0]; row.material = row.material || codeMap[plCodes[0]].name; }
+          if (plCodes.length) { row.material_code = plCodes[0]; const hit = resolveLegend(plCodes[0]); if (hit) fillMaterial(row, hit); }
         } else if (/countertop|transaction_top/.test(t)) {
-          if (ssCodes.length) { row.material_code = ssCodes[0]; row.material = row.material || codeMap[ssCodes[0]].name; }
+          if (ssCodes.length) { row.material_code = ssCodes[0]; const hit = resolveLegend(ssCodes[0]); if (hit) fillMaterial(row, hit); }
         } else if (/decorative_panel/.test(t) && /FRP|FIBERGLASS/i.test(combined)) {
-          if (wcCodes.length) { row.material_code = wcCodes[0]; row.material = row.material || codeMap[wcCodes[0]].name; }
+          if (wcCodes.length) { row.material_code = wcCodes[0]; const hit = resolveLegend(wcCodes[0]); if (hit) fillMaterial(row, hit); }
         } else if (/rubber_base/.test(t)) {
-          if (fbCodes.length) { row.material_code = fbCodes[0]; row.material = row.material || codeMap[fbCodes[0]].name; }
+          if (fbCodes.length) { row.material_code = fbCodes[0]; const hit = resolveLegend(fbCodes[0]); if (hit) fillMaterial(row, hit); }
         } else if (/substrate/.test(t)) {
           row.material_code = row.material_code || "PLY"; row.material = row.material || "Plywood";
         }
