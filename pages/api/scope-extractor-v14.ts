@@ -1173,7 +1173,7 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       content.push({ type: "text", text: userPrompt });
       
       const message = await anthropic.messages.create({
-        model: MODEL, max_tokens: 8192, temperature: 0.05,
+        model: MODEL, max_tokens: 8192, temperature: 0,
         system: systemPrompt,
         messages: [{ role: "user", content }],
       });
@@ -1302,6 +1302,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!isValidToon(toon, HEADER_V14)) {
       const fence = toon.match(/```(?:toon|csv|text)?\s*\n?(#TOON[\s\S]*?)```/);
       if (fence) toon = sanitizeToon(fence[1].trim());
+    }
+    // Recover from a plain preamble before the header: if the answer
+    // contains the #TOON header anywhere, slice from there instead of
+    // discarding the entire room over a few stray words.
+    if (!isValidToon(toon, HEADER_V14)) {
+      const hdrIdx = toon.indexOf("#TOON");
+      if (hdrIdx > 0) toon = sanitizeToon(toon.slice(hdrIdx).trim());
     }
     if (!isValidToon(toon, HEADER_V14)) {
       return res.status(400).json({
