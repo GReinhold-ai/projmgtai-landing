@@ -179,6 +179,175 @@ async function extractProjectContext(pages: PageText[]): Promise<ProjectContext>
 //   4. If a page matches multiple rooms, highest specificity wins
 //   5. Pages that only match via general terms go to most-specific match
 
+// ============================================================================
+// v14.11.1b: schedule-anchored room roster (ported from offline bench v2.4)
+// Derives the project's real room list from finish-schedule pages so room tabs
+// carry the architect's room names instead of hardcoded 24HF labels. Falls back
+// to the hardcoded titlePatterns when no schedule is found. Page assignment stays
+// NAME-based (roster names become title patterns at score 9) -- never a bare
+// room-number regex, which was the v14.11.1a regression.
+// ============================================================================
+
+const ROSTER_MIN_NAMED = 3;        // a roster page must name >= this many in-run rooms
+const ROSTER_MIN_DENSITY = 0.40;   // AND name this fraction of its in-run numbers
+const ROSTER_MIN_RUN = 5;          // a roster page needs a sequential run of >= this
+const ROSTER_SCORE = 9;            // < 10: 24HF hardcoded wins ties; roster is
+                                   // title-zone/sheetRef only (out of the >=10
+                                   // full-text fallback) -> conservative assignment.
+
+const ROSTER_MAX = 80;             // common-area sets run to a few dozen rooms; a roster
+                                   // larger than this is a residential typed-unit flood
+                                   // (per-unit room-number callouts) -> fall back instead.
+
+const ROSTER_JUNK = new Set<string>([
+  "white","black","gray","grey","beige","brown","tan","natural","matte","gloss",
+  "satin","clear","stain","paint","finish","color","colour","sheen","texture",
+  "mm","cm","in","inch","inches","ft","feet","sq","lf","ea","oc","dia","typ",
+  "min","max","thick","wide","high","tall","gauge","ga","lbs","lb","psf","psi",
+  "street","st","ave","avenue","blvd","road","rd","drive","dr","suite","ste",
+  "floor","fl","phone","fax","tel","email","zip","ca","az","ny","usa",
+  "cbc","ibc","ada","ansi","astm","ul","nfpa","code","section","sec","div","csi",
+  "spec","note","notes","keynote","detail","sheet","sht","rev","revision",
+  "addendum","asi","rfi","scale","date","dwg","drawing","plan","elev","elevation",
+  "wilsonart","formica","zodiaq","corian","forbo","robbins","accuride","blum",
+  "hafele","manufacturer","mfr","model","catalog","product","series","equal",
+  "approved","project","client","owner","architect","designer","consultant",
+  "general","contractor","title","index","cover","legend","schedule","total",
+  "page","of","strut","transom",
+  "attachment","work","scope","exhibit","sim","similar","varies","various","partial","overall","enlarged","ref",
+]);
+
+const ROSTER_FINISH_CODES = new Set<string>([
+  "ct","lvp","cpt","vct","sv","sc","vb","epoxy","frp","fr","ss","pl","wd","ply","fe",
+]);
+
+interface RosterRoom { num: number; name: string; }
+
+function rosterPageNumbers(text: string): number[] {
+  const re = /(?<!\d)([1-9]\d{2})(?![\dA-Za-z])/g;
+  const out = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.add(parseInt(m[1], 10));
+  return [...out];
+}
+
+function rosterNumbersInRuns(nums: number[], minRun = ROSTER_MIN_RUN, gap = 2): Set<number> {
+  const sorted = [...new Set(nums)].sort((a, b) => a - b);
+  const out = new Set<number>();
+  if (sorted.length === 0) return out;
+  let run = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const d = sorted[i] - sorted[i - 1];
+    if (d > 0 && d <= gap) run.push(sorted[i]);
+    else { if (run.length >= minRun) run.forEach(n => out.add(n)); run = [sorted[i]]; }
+  }
+  if (run.length >= minRun) run.forEach(n => out.add(n));
+  return out;
+}
+
+function rosterNameIsJunk(name: string): boolean {
+  const words = name.toLowerCase().match(/[a-z]+/g) || [];
+  if (words.length === 0) return true;
+  return words.some(w => ROSTER_JUNK.has(w));
+}
+
+function rosterLooksLikeRoomName(name: string): boolean {
+  if (rosterNameIsJunk(name)) return false;
+  const toks = name.split(/\s+/).filter(Boolean);
+  let multi = 0, single = 0;
+  for (const t of toks) {
+    const len = t.replace(/[^A-Za-z]/g, "").length;
+    if (len >= 2) multi++; else if (len === 1) single++;
+  }
+  if (multi === 0) return false;
+  if (single > multi) return false;
+  return true;
+}
+
+function rosterExtractNames(text: string): Map<number, string[]> {
+  const hits = new Map<number, string[]>();
+  const add = (num: number, raw: string) => {
+    const nm = raw.trim().replace(/^[-/&\s]+|[-/&\s]+$/g, "");
+    if (nm && !rosterNameIsJunk(nm)) {
+      if (!hits.has(num)) hits.set(num, []);
+      hits.get(num)!.push(nm);
+    }
+  };
+  const after = /(?<!\d)([1-9]\d{2})(?![\dA-Za-z])[ \t]+([A-Z][A-Za-z][A-Za-z &/\-]{2,28})/g;
+  const before = /\b([A-Z][A-Za-z][A-Za-z &/\-]{2,28}?)[ \t]+([1-9]\d{2})(?![\dA-Za-z])/g;
+  let m: RegExpExecArray | null;
+  while ((m = after.exec(text)) !== null) add(parseInt(m[1], 10), m[2]);
+  while ((m = before.exec(text)) !== null) add(parseInt(m[2], 10), m[1]);
+  return hits;
+}
+
+function buildScheduleRoster(pages: PageText[]): RosterRoom[] {
+  const perNums: number[][] = [];
+  const perNames: Map<number, string[]>[] = [];
+  for (const p of pages) {
+    const t = p.text || "";
+    perNums.push(rosterPageNumbers(t));
+    perNames.push(rosterExtractNames(t));
+  }
+  const counts = new Map<number, Map<string, number>>();
+  const rosterNums = new Set<number>();
+  for (let i = 0; i < pages.length; i++) {
+    const inrun = rosterNumbersInRuns(perNums[i]);
+    if (inrun.size === 0) continue;
+    let named = 0;
+    for (const num of inrun) {
+      const names = perNames[i].get(num) || [];
+      if (names.some(rosterLooksLikeRoomName)) named++;
+    }
+    const density = named / inrun.size;
+    if (named < ROSTER_MIN_NAMED || density < ROSTER_MIN_DENSITY) continue;
+    for (const num of inrun) {
+      rosterNums.add(num);
+      for (const nm of perNames[i].get(num) || []) {
+        if (!rosterLooksLikeRoomName(nm)) continue;
+        if (!counts.has(num)) counts.set(num, new Map());
+        const c = counts.get(num)!;
+        c.set(nm, (c.get(nm) || 0) + 1);
+      }
+    }
+  }
+  const roster: RosterRoom[] = [];
+  for (const num of [...rosterNums].sort((a, b) => a - b)) {
+    const c = counts.get(num);
+    if (!c || c.size === 0) continue;
+    let best = "", bestN = -1;
+    for (const [nm, n] of c) if (n > bestN) { best = nm; bestN = n; }
+    roster.push({ num, name: best });
+  }
+  return roster;
+}
+
+function rosterCleanName(name: string): string {
+  let toks = name.split(/\s+/).filter(Boolean);
+  while (toks.length > 1 && ROSTER_FINISH_CODES.has(toks[toks.length - 1].toLowerCase())) toks.pop();
+  return toks.join(" ").trim();
+}
+
+function rosterTitleCase(s: string): string {
+  return s.toLowerCase().replace(/\b[a-z]/g, c => c.toUpperCase());
+}
+
+function rosterToPatterns(roster: RosterRoom[]): [RegExp, string, number][] {
+  const seen = new Set<string>();
+  const out: [RegExp, string, number][] = [];
+  for (const r of roster) {
+    const clean = rosterCleanName(r.name);
+    if (clean.replace(/[^A-Za-z]/g, "").length < 3) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const esc = clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flexible = esc.replace(/\s+/g, "\\s*").replace(/&/g, "(?:&|and)");
+    out.push([new RegExp(`\\b${flexible}\\b`, "i"), rosterTitleCase(clean), ROSTER_SCORE]);
+  }
+  return out;
+}
+
 function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
   // ─── Step 0: Page type classification (logging only, no filtering) ───
   // Log page type stats for debugging but don't filter - let the LLM decide
@@ -271,6 +440,23 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/\bPantry\b/i, "Unclassified", 5],
     [/\bBanquet\b/i, "Banquet Room", 5],
   ];
+
+  
+  // v14.11.1b: schedule-anchored roster -> real room-name patterns (score 9).
+  // Empty roster (no finish schedule found) -> hardcoded titlePatterns only,
+  // i.e. exactly today's behavior. This is the safety guarantee.
+  const __roster = buildScheduleRoster(pages);
+  if (__roster.length > ROSTER_MAX) {
+    console.log(`[v14.11.1b] roster too large (${__roster.length} > ${ROSTER_MAX}); ` +
+      "likely a residential typed-unit set -> falling back to hardcoded titlePatterns");
+  } else if (__roster.length > 0) {
+    titlePatterns.push(...rosterToPatterns(__roster));
+    console.log(`[v14.11.1b] schedule roster: ${__roster.length} rooms -> ` +
+      __roster.slice(0, 10).map(r => `${r.num} ${r.name}`).join(", ") +
+      (__roster.length > 10 ? " ..." : ""));
+  } else {
+    console.log("[v14.11.1b] no schedule roster found; using hardcoded titlePatterns");
+  }
 
   // Sheet reference patterns — "T3.12" "A7.15" "A-403" "A-507" etc. in title block
   const sheetRefRe = /([AT]\d+[.\-]\d+)\s*[-–—:]\s*(.+)/gi;
