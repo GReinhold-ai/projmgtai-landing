@@ -447,6 +447,9 @@ export default function HomePage() {
       finalStats = {
         ...finalStats,
         roomCount: Math.max(finalStats.roomCount, mergedRoomCount),
+        extractedRooms: roomResults.filter((r: any) => r.status === "ok").length,
+        failedRooms: roomResults.filter((r: any) => r.status !== "ok").length,
+        detectedRooms: rooms.length,
         totalItems: allRows.length,
         withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
         withMaterials: allRows.filter((r: any) => r.material_code || r.material).length,
@@ -669,6 +672,7 @@ export default function HomePage() {
     sum.push(["SCOPE SUMMARY"]);
     sum.push(["Pages:", stats.pageCount]);
     sum.push(["Rooms:", stats.roomCount]);
+    if (stats.failedRooms > 0) sum.push(["Rooms Failed:", stats.failedRooms + " (see ROOM RESULTS below)"]);
     sum.push(["Total Items:", stats.totalItems]);
     sum.push(["Items w/ Dimensions:", stats.withDimensions]);
     sum.push(["Items w/ Materials:", stats.withMaterials]);
@@ -1320,10 +1324,10 @@ export default function HomePage() {
           {status === "done" && resultUrl && (
             <div style={{ padding:"24px 0" }}>
               <div style={{ fontSize:40, marginBottom:12 }}>✅</div>
-              <div style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>Extraction Complete</div>
+              <div style={{ fontSize:16, fontWeight:700, marginBottom:6, color: (stats && stats.failedRooms > 0) ? "#B45309" : "#0F0F0E" }}>{stats && stats.failedRooms > 0 ? `Partial - ${stats.failedRooms} room(s) failed extraction (see Warnings tab)` : "Extraction Complete"}</div>
               {stats && (
                 <div style={{ fontSize:12, color:"#5A5850", marginBottom:16, lineHeight:1.8 }}>
-                  {stats.pageCount} pages · {stats.roomCount} rooms · {stats.totalItems} items · {stats.withDimensions} with dims
+                  {stats.pageCount} pages · {stats.roomCount} rooms{stats.failedRooms > 0 ? ` (${stats.failedRooms} failed)` : ""} · {stats.totalItems} items · {stats.withDimensions} with dims
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
