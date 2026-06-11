@@ -16,8 +16,8 @@ async function supabaseInsert(table: string, record: Record<string, unknown>) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "apikey": process.env.SUPABASE_ANON_KEY!,
-      "Authorization": `Bearer ${process.env.SUPABASE_ANON_KEY!}`,
+      "apikey": process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      "Authorization": `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY!}`,
       "Prefer": "return=minimal",
     },
     body: JSON.stringify(record),
