@@ -1367,9 +1367,10 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
       return tb?.text?.trim() ?? "";
     } catch (err: any) {
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
-      if (is429 && attempt < 2) {
-        const wait = 15000 * Math.pow(2, attempt);
-        console.log(`[v14.8.1] Rate limited, waiting ${wait/1000}s...`);
+      const is529 = err?.status === 529 || err?.error?.type === "overloaded_error";
+      if ((is429 || is529) && attempt < 2) {
+        const wait = (is529 ? 3000 : 15000) * Math.pow(2, attempt) + Math.floor(Math.random() * 1000);
+        console.log(`[v14.11.2] ${is529 ? "Overloaded 529" : "Rate limited 429"}, waiting ${Math.round(wait/1000)}s (attempt ${attempt + 1}/3)...`);
         await new Promise(r => setTimeout(r, wait));
         continue;
       }
