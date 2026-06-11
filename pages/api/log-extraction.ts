@@ -1,11 +1,11 @@
-// pages/api/log-extraction.ts  v14.9.39
+// pages/api/log-extraction.ts  v14.11.3
 // Logs completed extraction metadata + Vercel Blob URLs to Supabase.
 // Called client-side after extraction completes, only when user has email
 // from homepage lead capture (stored in sessionStorage as projmgtai_email).
 //
 // Supabase table: extractions
-// Columns: id, user_email, project_name, room_count, item_count,
-//          page_count, blob_urls, created_at
+// Columns: id, upload_id, line_item_count, room_count, rfi_flag_count,
+//          processing_seconds, excel_url, delivered_at
 //
 // Deploy to: pages/api/log-extraction.ts AND src/pages/api/log-extraction.ts
 
@@ -36,31 +36,18 @@ export default async function handler(
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const {
-    user_email,
-    project_name,
-    room_count,
-    item_count,
-    page_count,
-    blob_urls,       // array of { url, filename, size_kb }
-  } = req.body || {};
+  const { room_count, item_count } = req.body || {};
 
-  if (!user_email) {
-    return res.status(400).json({ error: "user_email required" });
-  }
+  // email gate removed (v14.11.3): extractions logs telemetry for any completed run
 
   try {
     await supabaseInsert("extractions", {
-      user_email,
-      project_name: project_name || "unknown",
       room_count: room_count || 0,
-      item_count: item_count || 0,
-      page_count: page_count || 0,
-      blob_urls: JSON.stringify(blob_urls || []),
-      created_at: new Date().toISOString(),
+      line_item_count: item_count || 0,
+      delivered_at: new Date().toISOString(),
     });
 
-    console.log(`[log-extraction] logged for ${user_email}: ${room_count} rooms, ${item_count} items, ${(blob_urls || []).length} files`);
+    console.log(`[log-extraction] logged: ${room_count || 0} rooms, ${item_count || 0} items`);
     return res.status(200).json({ ok: true });
   } catch (err: any) {
     console.error("[log-extraction] failed:", err.message);
