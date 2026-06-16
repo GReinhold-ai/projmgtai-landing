@@ -36,7 +36,7 @@ import { postprocess } from "@/lib/parser/postprocess";
 import { extractMaterialLegend } from "@/lib/material-schedule";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-6";
 const HEADER_V14 = `#TOON v=1 sep=; cols=${MW_ITEM_SCHEMA_V14.join(",")}`;
 
 // ─── Types ───────────────────────────────────────────────────

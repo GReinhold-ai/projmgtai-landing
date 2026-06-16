@@ -15,7 +15,7 @@ export const anthropic = new Anthropic({
 });
 
 // Project-wide defaults — override per-call only if you have a good reason
-export const MODEL    = "claude-sonnet-4-20250514";
+export const MODEL    = "claude-sonnet-4-6";
 export const MAX_TOKENS_ANALYSIS    = 600;
 export const MAX_TOKENS_PITCH       = 1400;
 
