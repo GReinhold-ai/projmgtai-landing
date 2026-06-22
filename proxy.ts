@@ -13,7 +13,7 @@ import type { NextRequest } from "next/server";
 import { checkRateLimit } from "./lib/rate-limit";
 
 export const config = {
-  matcher: ["/api/scope-extractor-v14"],
+  matcher: ["/api/scope-extractor-v14", "/api/blob-upload-token"],
 };
 
 export async function proxy(req: NextRequest) {
