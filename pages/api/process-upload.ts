@@ -17,7 +17,7 @@ async function supabaseInsert(table: string, record: Record<string, unknown>) {
         "Content-Type": "application/json",
         "apikey": process.env.SUPABASE_ANON_KEY!,
         "Authorization": `Bearer ${process.env.SUPABASE_ANON_KEY!}`,
-        "Prefer": "return=representation",
+        "Prefer": "return=minimal",
       },
       body: JSON.stringify(record),
     }
@@ -26,7 +26,7 @@ async function supabaseInsert(table: string, record: Record<string, unknown>) {
     const err = await res.text();
     throw new Error(`Supabase insert failed: ${err}`);
   }
-  return res.json();
+  return;
 }
 
 // -- Confirmation email ---------------------------------------------------
