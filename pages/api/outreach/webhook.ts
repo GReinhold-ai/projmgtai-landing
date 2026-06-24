@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import crypto from "crypto";
+import { EventWebhook } from "@sendgrid/eventwebhook";
 import { createClient } from "@supabase/supabase-js";
 
 // ─── Supabase client ──────────────────────────────────────────────────────────
@@ -60,21 +60,29 @@ async function alertHotLead(email: string, leadId: string, event: SGEvent) {
 // SendGrid signed webhooks include X-Twilio-Email-Event-Webhook-Signature.
 // Enable in SendGrid → Settings → Mail Settings → Signed Event Webhook.
 function verifySignature(req: NextApiRequest, rawBody: string): boolean {
-  const secret = process.env.SENDGRID_WEBHOOK_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      console.error("[webhook] SENDGRID_WEBHOOK_SECRET not set — skipping verification (INSECURE)");
-    }
-    return true;
+  // Fail-closed ECDSA verification. SendGrid signs each event payload with an
+  // EC private key; SENDGRID_WEBHOOK_SECRET holds the PUBLIC verification key
+  // from Settings -> Mail Settings -> Signed Event Webhook. Unset key, missing
+  // headers, or a bad signature all reject. The raw body bytes must be passed
+  // unchanged (see readRawBody) or verification fails.
+  const publicKey = process.env.SENDGRID_WEBHOOK_SECRET;
+  if (!publicKey) {
+    console.error("[webhook] SENDGRID_WEBHOOK_SECRET not set - rejecting");
+    return false;
   }
 
   const signature = req.headers["x-twilio-email-event-webhook-signature"] as string;
   const timestamp = req.headers["x-twilio-email-event-webhook-timestamp"] as string;
   if (!signature || !timestamp) return false;
 
-  const payload  = timestamp + rawBody;
-  const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  try {
+    const ew = new EventWebhook();
+    const ecPublicKey = ew.convertPublicKeyToECDSA(publicKey);
+    return ew.verifySignature(ecPublicKey, rawBody, signature, timestamp);
+  } catch (e) {
+    console.error("[webhook] ECDSA verification error:", (e as Error).message);
+    return false;
+  }
 }
 
 // ─── Status mapper ────────────────────────────────────────────────────────────
@@ -95,9 +103,9 @@ export const config = { api: { bodyParser: false } };
 
 async function readRawBody(req: NextApiRequest): Promise<string> {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end",  () => resolve(data));
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    req.on("end",  () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
