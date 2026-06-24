@@ -16,9 +16,12 @@ import type { ApproveRequest, ApproveResponse, ErrorResponse } from "../../../ty
 // ─── Clients ──────────────────────────────────────────────────────────────────
 sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
 
+// Admin gate: shared secret required to invoke this internal CRM endpoint.
+const ADMIN_SECRET = process.env.OUTREACH_ADMIN_SECRET;
+
 const supabase = createClient(
   process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!  // service role — RLS is OFF, needs write access
+  process.env.SUPABASE_SERVICE_ROLE_KEY!  // service_role uses BYPASSRLS - bypasses all policies regardless of RLS state. Least-privilege demotion tracked as P2.2c.
 );
 
 // ─── Slack notifier ───────────────────────────────────────────────────────────
@@ -76,6 +79,14 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<ApproveResponse | ErrorResponse>
 ) {
+  // Admin-secret gate: reject unless the caller presents the shared secret.
+  // Fail-closed: if OUTREACH_ADMIN_SECRET is unset, the endpoint refuses all calls.
+  const provided = req.headers["x-admin-secret"];
+  if (!ADMIN_SECRET || provided !== ADMIN_SECRET) {
+    console.warn("[approve] rejected - missing or invalid admin secret");
+    return res.status(401).json({ success: false, error: "Unauthorized" });
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
   }
