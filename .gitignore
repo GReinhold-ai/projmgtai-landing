@@ -54,3 +54,5 @@ next-env.d.ts
 _patch_*.py
 _script_*.py
 _temp_*.py
+
+*.bak.*
