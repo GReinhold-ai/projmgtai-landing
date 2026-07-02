@@ -1331,7 +1331,7 @@ function cleanupRows(rows: any[]): any[] {
 
 // ─── LLM Call with Retry ─────────────────────────────────────
 
-async function callAnthropic(systemPrompt: string, userPrompt: string, images?: { pageNum: number; base64: string }[]): Promise<string> {
+async function callAnthropic(systemPrompt: string, userPrompt: string, images?: { pageNum: number; base64: string }[]): Promise<{ text: string; retriesUsed: number; degraded: boolean }> {
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
       // Build content blocks: text + optional images
@@ -1364,7 +1364,11 @@ async function callAnthropic(systemPrompt: string, userPrompt: string, images?: 
         messages: [{ role: "user", content }],
       });
       const tb = message.content.find((b: any) => b.type === "text");
-      return tb?.text?.trim() ?? "";
+      const text = tb?.text?.trim() ?? "";
+      const truncated = (message as any).stop_reason === "max_tokens";
+      const degraded = text === "" || truncated;
+      if (degraded) console.log(`[v14.11.5] DEGRADED: ${text === "" ? "empty text block on 200" : "max_tokens truncation"} (attempt ${attempt + 1}/3)`);
+      return { text, retriesUsed: attempt, degraded };
     } catch (err: any) {
       const is429 = err?.status === 429 || err?.error?.type === "rate_limit_error";
       const is529 = err?.status === 529 || err?.error?.type === "overloaded_error";
@@ -1479,7 +1483,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const tLlm = Date.now();
-    let toon = await callAnthropic(systemPrompt, userPrompt, images.length > 0 ? images : undefined);
+    const llmRes = await callAnthropic(systemPrompt, userPrompt, images.length > 0 ? images : undefined);
+    let toon = llmRes.text;
     const llmMs = Date.now() - tLlm;
 
     // v14.3: Sanitize TOON before validation
@@ -1711,6 +1716,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       model: MODEL, room: roomName,
       projectId: projectId || null,
       toon, rows: cleanedRows, assemblies: result.assemblies,
+      retriesUsed: llmRes.retriesUsed,
+      degraded: llmRes.degraded,
       stats: { ...result.stats, totalItems: cleanedRows.length },
       warnings: result.warnings,
       sheetInfo: sheetInfo.sheetNumber ? sheetInfo : null,

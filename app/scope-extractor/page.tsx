@@ -385,10 +385,16 @@ export default function HomePage() {
           retryCount = 0;
           const result = await extractRes.json();
           if (result.ok) {
+            const isDegraded = result.degraded === true || ((result.retriesUsed ?? 0) > 0 && (result.rows?.length || 0) === 0);
+            if (isDegraded) {
+              allWarnings.push(`[${room.roomName}] DEGRADED: throttled/truncated/empty response survived as 200 (retries=${result.retriesUsed ?? 0}) — re-run recommended`);
+            } else if ((result.retriesUsed ?? 0) > 0) {
+              allWarnings.push(`[${room.roomName}] Server retried ${result.retriesUsed}x (429/529) before succeeding`);
+            }
             allRows.push(...(result.rows || []));
             allWarnings.push(...(result.warnings || []).map((w: string) => `[${room.roomName}] ${w}`));
             roomResults.push({
-              room: room.roomName, status: "ok",
+              room: room.roomName, status: isDegraded ? "degraded" : "ok",
               itemCount: result.rows?.length || 0,
               pages: room.pageNums,
               sheetInfo: result.sheetInfo || null,
@@ -448,7 +454,8 @@ export default function HomePage() {
         ...finalStats,
         roomCount: Math.max(finalStats.roomCount, mergedRoomCount),
         extractedRooms: roomResults.filter((r: any) => r.status === "ok").length,
-        failedRooms: roomResults.filter((r: any) => r.status !== "ok").length,
+        degradedRooms: roomResults.filter((r: any) => r.status === "degraded").length,
+        failedRooms: roomResults.filter((r: any) => r.status === "failed" || r.status === "error").length,
         detectedRooms: rooms.length,
         totalItems: allRows.length,
         withDimensions: allRows.filter((r: any) => r.width_mm || r.length_mm || r.height_mm).length,
@@ -673,6 +680,7 @@ export default function HomePage() {
     sum.push(["Pages:", stats.pageCount]);
     sum.push(["Rooms:", stats.roomCount]);
     if (stats.failedRooms > 0) sum.push(["Rooms Failed:", stats.failedRooms + " (see ROOM RESULTS below)"]);
+    if (stats.degradedRooms > 0) sum.push(["Rooms Degraded:", stats.degradedRooms + " (throttled/truncated — re-run recommended, see ROOM RESULTS)"]);
     sum.push(["Total Items:", stats.totalItems]);
     sum.push(["Items w/ Dimensions:", stats.withDimensions]);
     sum.push(["Items w/ Materials:", stats.withMaterials]);
@@ -1323,11 +1331,11 @@ export default function HomePage() {
 
           {status === "done" && resultUrl && (
             <div style={{ padding:"24px 0" }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>✅</div>
+              <div style={{ fontSize:40, marginBottom:12 }}>{(stats?.degradedRooms || 0) > 0 ? "⚠️" : "✅"}</div>
               <div style={{ fontSize:16, fontWeight:700, marginBottom:6, color: (stats && stats.failedRooms > 0) ? "#B45309" : "#0F0F0E" }}>{stats && stats.failedRooms > 0 ? `Partial - ${stats.failedRooms} room(s) failed extraction (see Warnings tab)` : "Extraction Complete"}</div>
               {stats && (
                 <div style={{ fontSize:12, color:"#5A5850", marginBottom:16, lineHeight:1.8 }}>
-                  {stats.pageCount} pages · {stats.roomCount} rooms{stats.failedRooms > 0 ? ` (${stats.failedRooms} failed)` : ""} · {stats.totalItems} items · {stats.withDimensions} with dims
+                  {stats.pageCount} pages · {stats.roomCount} rooms{stats.failedRooms > 0 ? ` (${stats.failedRooms} failed)` : ""}{(stats.degradedRooms || 0) > 0 ? ` · ${stats.degradedRooms} DEGRADED — re-run recommended` : ""} · {stats.totalItems} items · {stats.withDimensions} with dims
                   {stats.materialLegendCount > 0 && ` · ${stats.materialLegendCount} materials resolved`}
                 </div>
               )}
