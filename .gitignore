@@ -56,3 +56,7 @@ _script_*.py
 _temp_*.py
 
 *.bak.*
+
+a121_*
+ipa_extract/
+ipa_sheets/
