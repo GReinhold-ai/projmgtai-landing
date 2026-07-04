@@ -281,6 +281,27 @@ function rosterExtractNames(text: string): Map<number, string[]> {
   return hits;
 }
 
+// [v14.12.0 Rule-66] guard constants + Layer A helper.
+// Bench-validated July 3 (rosterGuard.bench v5.2 GREEN: 24HF 13/13,
+// Menifee FK mirror-valid vs 6-room prod baseline, Menifee full recorded).
+const FURN_FRACTION = 0.6;        // name is title-block furniture if number-adjacent on >= this fraction of pages
+const FURN_MIN_PAGES = 3;
+const PAT_MAGNET_FRACTION = 0.6;  // roster pattern is a magnet if it matches >= this fraction of assignment surfaces
+const PAT_MAGNET_MIN_PAGES = 3;
+
+function buildRosterFurnitureSet(perNames: Map<number, string[]>[], numPages: number): Set<string> {
+  const docFreq = new Map<string, number>();
+  for (const pn of perNames) {
+    const seen = new Set<string>();
+    for (const arr of pn.values()) for (const nm of arr) seen.add(nm.toLowerCase());
+    for (const nm of seen) docFreq.set(nm, (docFreq.get(nm) || 0) + 1);
+  }
+  const cut = Math.max(FURN_MIN_PAGES, Math.ceil(numPages * FURN_FRACTION));
+  const out = new Set<string>();
+  for (const [nm, c] of docFreq) if (c >= cut) out.add(nm);
+  return out;
+}
+
 function buildScheduleRoster(pages: PageText[]): RosterRoom[] {
   const perNums: number[][] = [];
   const perNames: Map<number, string[]>[] = [];
@@ -289,6 +310,8 @@ function buildScheduleRoster(pages: PageText[]): RosterRoom[] {
     perNums.push(rosterPageNumbers(t));
     perNames.push(rosterExtractNames(t));
   }
+  // [v14.12.0 rule66-A] title-block furniture names (portland/irvine/consultants class)
+  const __furniture = buildRosterFurnitureSet(perNames, pages.length);
   const counts = new Map<number, Map<string, number>>();
   const rosterNums = new Set<number>();
   for (let i = 0; i < pages.length; i++) {
@@ -316,7 +339,11 @@ function buildScheduleRoster(pages: PageText[]): RosterRoom[] {
     const c = counts.get(num);
     if (!c || c.size === 0) continue;
     let best = "", bestN = -1;
-    for (const [nm, n] of c) if (n > bestN) { best = nm; bestN = n; }
+    for (const [nm, n] of c) {
+      if (__furniture.has(nm.toLowerCase())) continue; // [rule66-A] skip furniture names
+      if (n > bestN) { best = nm; bestN = n; }
+    }
+    if (!best) continue; // [rule66-A] all names were title-block furniture -> no entry
     roster.push({ num, name: best });
   }
   return roster;
@@ -450,7 +477,35 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     console.log(`[v14.11.1b] roster too large (${__roster.length} > ${ROSTER_MAX}); ` +
       "likely a residential typed-unit set -> falling back to hardcoded titlePatterns");
   } else if (__roster.length > 0) {
-    titlePatterns.push(...rosterToPatterns(__roster));
+    // [v14.12.0 rule66-B] drop non-discriminative (magnet) roster patterns:
+    // a pattern matching >= PAT_MAGNET_FRACTION of assignment surfaces
+    // (titleZone + that page's sheetRefs) groups nothing and only mints a
+    // junk tab (ELECTRICAL class). Bench-validated; see rule66 bench v5.2.
+    {
+      const __rp = rosterToPatterns(__roster);
+      const __zones = pages.map(p => p.text.substring(0, 600) + "\n" + p.text.substring(Math.max(0, p.text.length - 600)));
+      const __srRe = /([AT]\d+[.\-]\d+)\s*[-\u2013\u2014:]\s*(.+)/gi;
+      const __atRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-\u2013\u2014:]\s*(.+)/gi;
+      const __surfaces = pages.map((p, i) => {
+        const refs: string[] = [];
+        let mm: RegExpExecArray | null;
+        const sc = new RegExp(__srRe.source, __srRe.flags);
+        while ((mm = sc.exec(p.text)) !== null) refs.push(mm[2].trim());
+        const ac = new RegExp(__atRe.source, __atRe.flags);
+        while ((mm = ac.exec(p.text)) !== null) refs.push(mm[1].trim());
+        return __zones[i] + "\n" + refs.join("\n");
+      });
+      const __cut = Math.max(PAT_MAGNET_MIN_PAGES, Math.ceil(pages.length * PAT_MAGNET_FRACTION));
+      const __dropped: string[] = [];
+      const __kept = __rp.filter(([pattern, name]) => {
+        let cnt = 0;
+        for (const sf of __surfaces) if ((pattern as RegExp).test(sf)) cnt++;
+        if (cnt >= __cut) { __dropped.push(`${name}(${cnt}/${pages.length}p)`); return false; }
+        return true;
+      });
+      if (__dropped.length) console.log(`[v14.12.0 rule66-B] magnet patterns dropped: ${__dropped.join(", ")}`);
+      titlePatterns.push(...__kept);
+    }
     console.log(`[v14.11.1b] schedule roster: ${__roster.length} rooms -> ` +
       __roster.slice(0, 10).map(r => `${r.num} ${r.name}`).join(", ") +
       (__roster.length > 10 ? " ..." : ""));
