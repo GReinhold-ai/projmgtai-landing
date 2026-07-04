@@ -16,6 +16,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 // Increase body size limit for base64 page images
 export const config = {
   api: { bodyParser: { sizeLimit: "50mb" } },
+  maxDuration: 300, // v14.12.1: 504 fix — Unclassified batch exceeds 60s (deterministic on FK)
 };
 //   - Room grouping: title-block-aware detection (first/last 600 chars + sheet number patterns)
 //   - Room grouping: specificity scoring — "Kids Club" beats "Reception" on same page
