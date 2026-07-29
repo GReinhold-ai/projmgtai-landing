@@ -890,7 +890,7 @@ function buildUserPrompt(
   roomText: string, roomName: string, hints: any, ctx: ProjectContext, projectId?: string, sheetInfo?: SheetDetailInfo
 ): string {
   const parts: string[] = [];
-  parts.push(`Project: ${projectId || "(unspecified)"}`);
+  parts.push(`Project: (unspecified)`); // v14.12.3-novolatile: projectId is a per-upload DB key; injecting it guaranteed cross-upload prompt divergence
   parts.push(`Room: ${roomName}`);
   parts.push(`Document Type: ${ctx.documentType}`);
   parts.push("");

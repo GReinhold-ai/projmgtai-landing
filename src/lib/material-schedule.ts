@@ -181,6 +181,7 @@ export async function extractMaterialLegend(
     const msg = await client.messages.create({
       model: MODEL_MATERIAL,
       max_tokens: MAX_TOKENS_MATERIAL,
+      temperature: 0, // v14.12.3-legend-det: default 1.0 was the 67-vs-70 entry variance (FK runs 25/26)
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: allText }],
     });
@@ -224,6 +225,10 @@ export async function extractMaterialLegend(
       seen.add(k);
       return true;
     });
+
+    // v14.12.3-legend-det: canonical order — prompt bytes must be a pure
+    // function of the entry set, independent of model output order.
+    deduped.sort((a, b) => (a.code.toUpperCase() < b.code.toUpperCase() ? -1 : a.code.toUpperCase() > b.code.toUpperCase() ? 1 : 0));
 
     console.log(
       `[D1-material] haiku legend: ${deduped.length} entries (${rows.length} raw rows)`,
