@@ -1579,11 +1579,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Decode & post-process
+    // v14.12.4-attr: row-attrition counters. Rows can only LEAVE between the
+    // decode below and the degarbled rebuild; everything after 1614 mutates in
+    // place. Read-only instrument -- do not branch on these values.
+    const _attr = { raw: 0, post: 0, clean: 0, dropGarbled: 0, drop84: 0, final: 0 };
     const rawRows = decodeToon(toon);
+    _attr.raw = rawRows.length;
     const result = postprocess(rawRows);
+    _attr.post = (result.rows || []).length;
 
     // v14.3: Clean up rows
     const cleanedRows = cleanupRows(result.rows);
+    _attr.clean = cleanedRows.length;
     // v14.8.1: ALWAYS override room to the API-provided roomName.
     for (const row of cleanedRows) { row.room = roomName; }
 
@@ -1594,14 +1601,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const d = (row.description || "").trim();
       const r = (row.room || "").trim();
       // Drop if item_type matches room name (not a valid type) and description also matches
-      if (t === r && d === r) return false;
-      if (t === r && d === "") return false;
+      if (t === r && d === r) { _attr.dropGarbled++; return false; }
+      if (t === r && d === "") { _attr.dropGarbled++; return false; }
 
       // v14.8.4: Drop Unclassified scope_exclusions that are clearly non-millwork
       // Ceiling systems, AV mounts, sprinkler heads, structural items — never millwork scope.
       if (r === "Unclassified" && t === "scope_exclusion") {
         const dl = d.toLowerCase();
         if (/ceiling|suspended.*grid|acoustical.*tile|gypsum.*board|sprinkler|demo.*ceiling|cedar.*panel.*angle|ceramic.*tile.*angle|projector|tv.*mount|fan.*mount/i.test(dl)) {
+          _attr.drop84++;
           return false;
         }
       }
@@ -1610,6 +1618,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
     cleanedRows.length = 0;
     degarbled.forEach(r => cleanedRows.push(r));
+    _attr.final = cleanedRows.length;
     
     // v14.8.1: Auto-assign sheet_ref from extracted sheet/detail info
     if (sheetInfo.sheetNumber) {
@@ -1788,6 +1797,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       retriesUsed: llmRes.retriesUsed,
       degraded: llmRes.degraded,
       inputFingerprint, // v14.12.2-fp
+      attrition: _attr, // v14.12.4-attr
       stats: { ...result.stats, totalItems: cleanedRows.length },
       warnings: result.warnings,
       sheetInfo: sheetInfo.sheetNumber ? sheetInfo : null,
