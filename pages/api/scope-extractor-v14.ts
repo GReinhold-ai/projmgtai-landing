@@ -1538,6 +1538,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log(`[v14.8.1] Vision mode: ${images.length} image page(s) for ${roomName}`);
     }
 
+    // v14.12.2-fp: input fingerprint — computed on the EXACT strings sent to the model.
+    // Identical promptSha across runs with divergent item counts = model-side variance;
+    // divergent promptSha = grouping/ctx assigned different input (input-side variance).
+    const { createHash } = await import("crypto");
+    const inputFingerprint = {
+      promptSha: createHash("sha256").update(systemPrompt + "\u0000" + userPrompt, "utf8").digest("hex").slice(0, 16),
+      systemPromptChars: systemPrompt.length,
+      userPromptChars: userPrompt.length,
+      pageNums: roomPageTexts.map(p => p.pageNum),
+      pageCount: roomPageTexts.length,
+      imageCount: images.length,
+    };
+
     const tLlm = Date.now();
     const llmRes = await callAnthropic(systemPrompt, userPrompt, images.length > 0 ? images : undefined);
     let toon = llmRes.text;
@@ -1774,6 +1787,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       toon, rows: cleanedRows, assemblies: result.assemblies,
       retriesUsed: llmRes.retriesUsed,
       degraded: llmRes.degraded,
+      inputFingerprint, // v14.12.2-fp
       stats: { ...result.stats, totalItems: cleanedRows.length },
       warnings: result.warnings,
       sheetInfo: sheetInfo.sheetNumber ? sheetInfo : null,

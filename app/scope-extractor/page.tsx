@@ -399,6 +399,7 @@ export default function HomePage() {
               pages: room.pageNums,
               sheetInfo: result.sheetInfo || null,
               timing: result.timing,
+              fingerprint: result.inputFingerprint || null, // v14.12.2-fp
             });
           } else {
             allWarnings.push(`[${room.roomName}] ${result.error || "Unknown error"}`);
@@ -1192,6 +1193,26 @@ export default function HomePage() {
         { wch: 80 }, { wch: 14 }, { wch: 8 },
       ];
       XLSX.utils.book_append_sheet(wb, wsRfi, "RFIs");
+    }
+
+    // v14.12.2-fp: Extract Diagnostics tab — input fingerprint per room (variance instrumentation).
+    // Deliberately a SEPARATE sheet: the golden gate's exact-cell anchor lives on Project Summary
+    // and this tab must never contain that anchor string.
+    {
+      const dg: any[][] = [["EXTRACT DIAGNOSTICS"], []];
+      dg.push(["Room", "Status", "PromptSHA", "SysChars", "UserChars", "PageCount", "Pages", "Images", "Retries"]);
+      for (const r of roomResults) {
+        const fp = (r as any).fingerprint;
+        dg.push([
+          r.room, r.status,
+          fp?.promptSha || "", fp?.systemPromptChars ?? "", fp?.userPromptChars ?? "",
+          fp?.pageCount ?? "", (fp?.pageNums || (r as any).pages || []).join(","),
+          fp?.imageCount ?? "", (r as any).retriesUsed ?? "",
+        ]);
+      }
+      const wsDg = XLSX.utils.aoa_to_sheet(dg);
+      wsDg["!cols"] = [{ wch: 22 }, { wch: 10 }, { wch: 18 }, { wch: 9 }, { wch: 10 }, { wch: 10 }, { wch: 24 }, { wch: 8 }, { wch: 8 }];
+      XLSX.utils.book_append_sheet(wb, wsDg, "Extract Diagnostics");
     }
 
     // Warnings tab

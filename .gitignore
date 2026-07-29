@@ -60,3 +60,5 @@ _temp_*.py
 a121_*
 ipa_extract/
 ipa_sheets/
+
+*.20[0-9][0-9][0-9][0-9][0-9][0-9]_*.bak
