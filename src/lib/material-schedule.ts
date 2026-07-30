@@ -178,6 +178,21 @@ export async function extractMaterialLegend(
   if (!allText || allText.trim().length < 40) return [];
 
   try {
+    // v14.12.5-legendfp: read-only input fingerprint. Hashes the exact bytes
+    // handed to haiku. temperature 0 and the canonical sort (v14.12.3) already
+    // removed the output-side causes, so a userSha that MOVES between runs
+    // means the drift is upstream of this call and a content-hash cache would
+    // miss every time. Branch on nothing here.
+    const { createHash } = await import("crypto");
+    const _lfp = {
+      inputSha: createHash("sha256").update(SYSTEM_PROMPT + "\u0000" + allText, "utf8").digest("hex").slice(0, 16),
+      sysSha: createHash("sha256").update(SYSTEM_PROMPT, "utf8").digest("hex").slice(0, 16),
+      userSha: createHash("sha256").update(allText, "utf8").digest("hex").slice(0, 16),
+      chars: allText.length,
+    };
+    console.log(
+      `[D1-material] legendInput inputSha=${_lfp.inputSha} sysSha=${_lfp.sysSha} userSha=${_lfp.userSha} chars=${_lfp.chars}`,
+    );
     const msg = await client.messages.create({
       model: MODEL_MATERIAL,
       max_tokens: MAX_TOKENS_MATERIAL,
@@ -231,7 +246,7 @@ export async function extractMaterialLegend(
     deduped.sort((a, b) => (a.code.toUpperCase() < b.code.toUpperCase() ? -1 : a.code.toUpperCase() > b.code.toUpperCase() ? 1 : 0));
 
     console.log(
-      `[D1-material] haiku legend: ${deduped.length} entries (${rows.length} raw rows)`,
+      `[D1-material] haiku legend: ${deduped.length} entries (${rows.length} raw rows) inputSha=${_lfp.inputSha}`,
     );
     return deduped;
   } catch (err) {
