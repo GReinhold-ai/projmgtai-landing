@@ -193,6 +193,38 @@ export async function extractMaterialLegend(
     console.log(
       `[D1-material] legendInput inputSha=${_lfp.inputSha} sysSha=${_lfp.sysSha} userSha=${_lfp.userSha} chars=${_lfp.chars}`,
     );
+
+    // v14.13.0-legendcache: read-through cache keyed on the hash above.
+    // Env convention follows pages/api/outreach/approve.ts:22-25.
+    // service_role carries BYPASSRLS; legend_cache has no anon policies by
+    // design. Every failure path here is non-fatal and falls through to haiku.
+    let _sb: any = null;
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      try {
+        const { createClient } = await import("@supabase/supabase-js");
+        _sb = createClient(
+          process.env.SUPABASE_URL,
+          process.env.SUPABASE_SERVICE_ROLE_KEY,
+        );
+        const { data: _hitRows, error: _readErr } = await _sb.rpc("legend_cache_get", {
+          p_input_sha: _lfp.inputSha,
+          p_model: MODEL_MATERIAL,
+        });
+        const _hit = Array.isArray(_hitRows) ? _hitRows[0] : null;
+        if (_readErr) {
+          console.log(`[D1-material] cache read failed (non-fatal): ${_readErr.message}`);
+        } else if (_hit && Array.isArray(_hit.entries) && _hit.entries.length > 0) {
+          console.log(
+            `[D1-material] haiku legend: ${_hit.entries.length} entries (cache) inputSha=${_lfp.inputSha} legendSource=cache cachedAt=${_hit.created_at}`,
+          );
+          return _hit.entries as MaterialLegendEntry[];
+        }
+      } catch (e) {
+        console.log(`[D1-material] cache unavailable (non-fatal): ${(e as Error)?.message}`);
+        _sb = null;
+      }
+    }
+
     const msg = await client.messages.create({
       model: MODEL_MATERIAL,
       max_tokens: MAX_TOKENS_MATERIAL,
@@ -245,8 +277,31 @@ export async function extractMaterialLegend(
     // function of the entry set, independent of model output order.
     deduped.sort((a, b) => (a.code.toUpperCase() < b.code.toUpperCase() ? -1 : a.code.toUpperCase() > b.code.toUpperCase() ? 1 : 0));
 
+    // v14.13.0-legendcache: write-behind. Non-empty only -- an empty legend
+    // cached here would be served forever. ignoreDuplicates keeps the first
+    // writer's value when two analyses race, so the cached legend is stable.
+    if (_sb && deduped.length > 0) {
+      try {
+        const { error: _writeErr } = await _sb.from("legend_cache").upsert(
+          {
+            input_sha: _lfp.inputSha,
+            model: MODEL_MATERIAL,
+            entries: deduped,
+            entry_count: deduped.length,
+            input_chars: _lfp.chars,
+          },
+          { onConflict: "input_sha,model", ignoreDuplicates: true },
+        );
+        if (_writeErr) {
+          console.log(`[D1-material] cache write failed (non-fatal): ${_writeErr.message}`);
+        }
+      } catch (e) {
+        console.log(`[D1-material] cache write threw (non-fatal): ${(e as Error)?.message}`);
+      }
+    }
+
     console.log(
-      `[D1-material] haiku legend: ${deduped.length} entries (${rows.length} raw rows) inputSha=${_lfp.inputSha}`,
+      `[D1-material] haiku legend: ${deduped.length} entries (${rows.length} raw rows) inputSha=${_lfp.inputSha} legendSource=haiku`,
     );
     return deduped;
   } catch (err) {
