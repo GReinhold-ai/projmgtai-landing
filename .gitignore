@@ -62,3 +62,6 @@ ipa_extract/
 ipa_sheets/
 
 *.20[0-9][0-9][0-9][0-9][0-9][0-9]_*.bak
+
+# anchored-patch backups (never commit)
+*.bak-*
