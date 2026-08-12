@@ -1316,26 +1316,6 @@ function cleanupRows(rows: any[]): any[] {
         if (_m4) _backfillMm = Math.round(parseInt(_m4[1]) * 304.8);
       }
 
-      // P5 (v14.13.1): label-anchored fallback on the prose fields.
-      // The model sometimes states the width in confidence/notes while leaving
-      // width_mm empty, e.g. "Width 3'-3 = 991mm per plan dimension."
-      // description keeps priority -- P5 only runs when P1-P4 found nothing.
-      // Anchored on the "width" label on purpose: prose can carry two dimensions
-      // ("Width 7'-9 = 2362mm. Height 2'-6 = 762mm.") and an unanchored search
-      // takes the first match, which would write a height into width_mm.
-      if (!_backfillMm) {
-        const _prose = `${row.confidence || ""} ${row.notes || ""}`;
-        const _m5a = _prose.match(/width[^.;]*?\b(\d{1,2})'-(\d{1,2})(?:\s+(\d+)\/(\d+))?/i);
-        if (_m5a) {
-          const _fr5 = _m5a[3] ? parseInt(_m5a[3]) / parseInt(_m5a[4]) : 0;
-          _backfillMm = _toMm(parseInt(_m5a[1]), parseInt(_m5a[2]), _fr5);
-        }
-        if (!_backfillMm) {
-          const _m5b = _prose.match(/width[^.;]*?\b(\d{3,5})\s*mm\b/i);
-          if (_m5b) _backfillMm = parseInt(_m5b[1]);
-        }
-      }
-
       // Sanity gate: cabinet runs are 1ft (305mm) to 40ft (12192mm)
       // Values outside this range are likely heights or depths leaking in — skip
       if (_backfillMm >= 305 && _backfillMm <= 12192) {
