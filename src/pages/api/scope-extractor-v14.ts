@@ -403,7 +403,7 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     [/\bRECEPTION\s+\d+\s*SF\b/, "Reception Desk", 10],         // v14.10.11: room schedule "RECEPTION 99 SF"
 
     [/Team\s*(?:Member|Memb)/i, "Team Members", 10],
-    [/Team\s*Room/i, "Team Room", 10],
+    [/\bTeam\s*Room/i, "Team Room", 10],
     [/Men['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Mens Vanity", 10],
     [/Wom[ea]n['']?s?\s*(?:Vanit|Locker|Restroom)/i, "Womens Vanity", 10],
     [/Vanit(?:y|ies)\s*Detail/i, "Vanity Details", 10],
