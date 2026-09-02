@@ -515,13 +515,13 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
   }
 
   // Sheet reference patterns — "T3.12" "A7.15" "A-403" "A-507" etc. in title block
-  const sheetRefRe = /([AT]\d+[.\-]\d+)\s*[-–—:]\s*(.{1,80})/gi;
+  const sheetRefRe = /([AT]\d+[.\-]\d+)\s*[-–—:]\s*(.{1,80}?)(?=\s+[AT]\d+[.\-]\d+|$)/gi;
 
   // Multi-detail detection: pages with multiple "ENLARGED X PLAN" or "X DETAIL" headings
   const detailHeadingRe = /(?:ENLARGED|INTERIOR|CASEWORK|MILLWORK|CABINET)\s+([A-Z][A-Z\s'&/]+?)\s*(?:PLAN|DETAIL|SECTION|ELEVATION|VIEW)/gi;
 
   // Also detect room names after common architectural prefixes
-  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-–—:]\s*(.{1,80})/gi;
+  const archTitleRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-–—:]\s*(.{1,80}?)(?=\s+[AT]\d+[.\-]\d+|$)/gi;
 
   const roomMap = new Map<string, number[]>();
 
