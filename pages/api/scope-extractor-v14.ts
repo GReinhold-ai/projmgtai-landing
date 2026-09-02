@@ -485,8 +485,8 @@ function groupPagesByRoom(pages: PageText[]): RoomInfo[] {
     {
       const __rp = rosterToPatterns(__roster);
       const __zones = pages.map(p => p.text.substring(0, 600) + "\n" + p.text.substring(Math.max(0, p.text.length - 600)));
-      const __srRe = /([AT]\d+[.\-]\d+)\s*[-\u2013\u2014:]\s*(.{1,80})/gi;
-      const __atRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-\u2013\u2014:]\s*(.{1,80})/gi;
+      const __srRe = /([AT]\d+[.\-]\d+)\s*[-\u2013\u2014:]\s*(.+)/gi;
+      const __atRe = /(?:INTERIOR\s+ELEVATIONS?|CASEWORK\s+DETAILS?|MILLWORK\s+DETAILS?|ENLARGED\s+PLANS?|FINISH\s+PLANS?)\s*[-\u2013\u2014:]\s*(.+)/gi;
       const __surfaces = pages.map((p, i) => {
         const refs: string[] = [];
         let mm: RegExpExecArray | null;
