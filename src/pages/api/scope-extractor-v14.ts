@@ -274,8 +274,9 @@ function rosterExtractNames(text: string): Map<number, string[]> {
       hits.get(num)!.push(nm);
     }
   };
-  const after = /(?<!\d)([1-9]\d{2})(?![\dA-Za-z])[ \t]+([A-Z][A-Za-z][A-Za-z &/\-]{2,28})/g;
-  const before = /\b([A-Z][A-Za-z][A-Za-z &/\-]{2,28}?)[ \t]+([1-9]\d{2})(?![\dA-Za-z])/g;
+  // [v14.12.1 name-digit-token] roster name class admits an isolated single digit
+  const after = /(?<!\d)([1-9]\d{2})(?![\dA-Za-z])[ \t]+([A-Z][A-Za-z](?:[A-Za-z &/\-]|(?<=[ ])\d(?=[ ])){2,28})/g;
+  const before = /\b([A-Z][A-Za-z](?:[A-Za-z &/\-]|(?<=[ ])\d(?=[ ])){2,28}?)[ \t]+([1-9]\d{2})(?![\dA-Za-z])/g;
   let m: RegExpExecArray | null;
   while ((m = after.exec(text)) !== null) add(parseInt(m[1], 10), m[2]);
   while ((m = before.exec(text)) !== null) add(parseInt(m[2], 10), m[1]);
