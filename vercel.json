@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "main": false
+    }
+  },
   "functions": {
     "src/pages/api/extract-and-export.ts": {
       "maxDuration": 60,
